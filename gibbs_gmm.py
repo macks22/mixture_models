@@ -15,19 +15,27 @@ from component import GaussianComponent
 class GMM(object):
     """Finite Gaussian Mixture Model."""
 
-    def __init__(self, K, nsamples=220, burnin=20, thin_step=2):
+    """Initialization methods supported & not yet implemented."""
+    _supported = ('kmeans', 'random', 'load')
+    _not_implemented = ('load',)
+
+    @classmethod
+    def supported_init_method(cls, init_method):
+        return init_method in cls._supported
+
+    @classmethod
+    def implemented_init_method(cls, init_method):
+        return init_method not in cls._not_implemented
+
+    def __init__(self, K, alpha=0.0):
         """Initialize top-level parameters for Gaussian Mixture Model.
 
         Args:
             K (int): Fixed number of components.
-            nsamples (int): Number of Gibbs samples to draw.
-            burnin (int): Number of Gibbs samples to discard.
-            thin_step (int): Stepsize for thinning to reduce autocorrelation.
+            alpha (float): Dirichlet hyper-parameter alpha; defaults to K.
         """
         self.K = K
-        self.nsamples = nsamples
-        self.burnin = burnin
-        self.thin_step = thin_step
+        self.alpha = alpha if alpha else float(K)
 
         # These are the parameters that will be fit.
         self.comps = []
@@ -53,12 +61,11 @@ class GMM(object):
     def covs(self):
         return np.array([comp.cov for comp in self.comps])
 
-    def fit(self, X, alpha=0.0, init_method='kmeans', iters=100):
-        """Fit the parameters of the model using the data X.
+    def init_comps(self, X, init_method='kmeans', iters=100):
+        """Initialize mixture components.
 
         Args:
             X (np.ndarray): Data matrix with instances as rows.
-            alpha (float): Dirichlet hyper-parameter alpha.
             init_method (str): Method to use for initialization. One of:
                 'kmeans': initialize using k-means clustering with K clusters.
                 'random': randomly assign instances to components.
@@ -66,14 +73,12 @@ class GMM(object):
             iters (int): Number of iterations to use for k-means
                 initialization if init_method is 'kmeans'.
         """
-        supported = ['kmeans', 'random', 'load']
-        if init_method not in supported:
+        if init_method not in self._supported:
             raise ValueError(
                 '%s is not a supported init method; must be one of: %s' % (
                     init_method, ', '.join(supported)))
 
-        not_implemented = ['load']
-        if init_method in not_implemented:
+        if init_method in self._not_implemented:
             raise NotImplemented(
                 '%s initialization not yet implemented' % init_method)
 
@@ -81,21 +86,36 @@ class GMM(object):
         # the specified init_method. This also initializes the component
         # parameters based on the assigned data instances.
         n, f = X.shape  # number of instances, number of features
-        K = self.K
-        comp_labels = np.arange(K)
+        self.labels = np.arange(self.K)
 
         if init_method == 'kmeans':
             centroids, self.z = spvq.kmeans2(X, K, minit='points', iter=iters)
-            self.comps = [GaussianComponent(X, self.z == k) for k in comp_labels]
+            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
         elif init_method == 'random':
             self.z = np.random.randint(0, K, n)
-            self.comps = [GaussianComponent(X, self.z == k) for k in comp_labels]
+            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
         elif init_method == 'load':
             pass
 
+    def fit(self, X, init_method='kmeans', iters=100,
+            nsamples=220, burnin=20, thin_step=2):
+        """Fit the parameters of the model using the data X.
+        See `init_comps` method for info on parameters not listed here.
+
+        Args:
+            X (np.ndarray): Data matrix with instances as rows.
+            nsamples (int): Number of Gibbs samples to draw.
+            burnin (int): Number of Gibbs samples to discard.
+            thin_step (int): Stepsize for thinning to reduce autocorrelation.
+        """
+        self.nsamples = nsamples
+        self.burnin = burnin
+        self.thin_step = thin_step
+        self.init_comps(X, init_method, iters)
+        n, f = X.shape
+
         # Set alpha to K by default if not given.
         # Setting to K makes the Dirichlet uniform over the components.
-        self.alpha = alpha if alpha else float(K)
         alpha = self.alpha
         alpha_k = self.alpha / K
 
@@ -106,16 +126,22 @@ class GMM(object):
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
         store = int(keeping / 2)
-        pi = np.zeros((store, K))
-        mu = np.zeros((store, K, f))
-        Sigma = np.zeros((store, K, f, f))
-        ll = np.zeros(store)
+        pi = np.zeros((store, K))  # mixture weights
+        H_ik = np.zeros((store, n, K))  # posterior mixture responsibilities
+        mu = np.zeros((store, K, f))  # component means
+        Sigma = np.zeros((store, K, f, f))  # component covariance matrices
+        ll = np.zeros(store)  # log-likelihood at each step
 
         print('initial log-likelihood: %.3f' % self.llikelihood())
 
         # Run collapsed Gibbs sampling to fit the model.
         indices = np.arange(n)
         for iternum in range(self.nsamples):
+            logging_iter = iternum % self.thin_step == 0
+            saving_sample = logging_iter and (iternum >= self.burnin - 1)
+            if saving_sample:
+                idx = (iternum - self.burnin) / self.thin_step
+
             for i in np.random.permutation(indices):
                 x = X[i]
 
@@ -143,20 +169,23 @@ class GMM(object):
                 self.comps[k].add_instance(i)
                 self.z[i] = k
 
+                # save posterior responsibility each component takes for
+                # explaining data instance i
+                if saving_sample:
+                    H_ik[idx, i] = Pk
 
-            if iternum % self.thin_step == 0:
+            if logging_iter:
                 llik = self.llikelihood()
                 print('sample %d, log-likelihood: %.3f' % (iternum, llik))
 
-                if iternum >= (self.burnin - 1):
-                    i = (iternum - self.burnin) / self.thin_step
-                    pi[i] = Pk
+                if saving_sample:
+                    pi[idx] = Pk
                     stats = [comp.posterior.rvs() for comp in self.comps]
-                    mu[i] = np.r_[[stat[0] for stat in stats]]
-                    Sigma[i] = np.r_[[stat[1] for stat in stats]]
-                    ll[i] = llik
+                    mu[idx] = np.r_[[stat[0] for stat in stats]]
+                    Sigma[idx] = np.r_[[stat[1] for stat in stats]]
+                    ll[idx] = llik
 
-        return ll, pi, mu, Sigma
+        return ll, H_ik, pi, mu, Sigma
 
     def label_llikelihood(self):
         """Calculate ln(P(z | alpha)), the marginal log-likelihood of the
@@ -203,8 +232,8 @@ class GMM(object):
 if __name__ == "__main__":
     np.random.seed(1234)
 
-    M = 100          # number of samples per component
-    K = 2            # initial guess for number of clusters
+    M = 100            # number of samples per component
+    K = 2              # initial guess for number of clusters
     method = 'kmeans'  # parameter initialization method
 
     # Generate two 2D Gaussians
@@ -212,17 +241,16 @@ if __name__ == "__main__":
         stats.multivariate_normal.rvs([-5, -7], 2, M),
         stats.multivariate_normal.rvs([5, 7], 4, M)
     ]
-
-    # 2, 2-dimensional Gaussians
-    # n_samples = M
-    # C = np.array([[0., -0.1], [1.7, .4]])
-    # X = np.r_[np.dot(np.random.randn(n_samples, 2), C),
-    #           .7 * np.random.randn(n_samples, 2) + np.array([-6, 3])]
-
     true_z = np.concatenate([[k] * M for k in range(K)])
-    n, nf = X.shape  # number of instances, number of features
 
-    gmm = GMM(K, nsamples=100, burnin=10)
-    ll, pi, mu, Sigma = gmm.fit(X, init_method=method)
+    # Initialize and fit Gaussian Mixture Model.
+    gmm = GMM(K)
+    ll, H_ik, pi, mu, Sigma = gmm.fit(X, init_method=method, nsamples=100, burnin=10)
 
-    # TODO: samples for Sigma are way too big.
+    # Calculate expectations using Monte Carlo estimates.
+    E = {
+        'H_ik': H_ik.mean(0),
+        'pi': pi.mean(0),
+        'mu': mu.mean(0),
+        'Sigma': Sigma.mean(0)
+    }
