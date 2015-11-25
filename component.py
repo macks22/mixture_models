@@ -91,7 +91,7 @@ class GaussianComponent(object):
         if self.prior is None:
 
             # Init mu ~ Normal hyperparams.
-            mu = self.X.mean(0)
+            mu = self.X.mean(0) if self.n else np.zeros(self.nf)
             kappa = 1.0
 
             # Init Sigma ~ Inv-Wishart hyperparams.

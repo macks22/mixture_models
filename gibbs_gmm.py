@@ -61,6 +61,23 @@ class GMM(object):
     def covs(self):
         return np.array([comp.cov for comp in self.comps])
 
+    def _init_comps(self, X, init_method='kmeans', iters=100):
+        """Choose an initial assignment of instances to components using
+        the specified init_method. This also initializes the component
+        parameters based on the assigned data instances.
+        """
+        n, f = X.shape  # number of instances, number of features
+        self.labels = np.arange(self.K)
+
+        if init_method == 'kmeans':
+            centroids, self.z = spvq.kmeans2(X, self.K, minit='points', iter=iters)
+            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
+        elif init_method == 'random':
+            self.z = np.random.randint(0, self.K, n)
+            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
+        elif init_method == 'load':
+            pass
+
     def init_comps(self, X, init_method='kmeans', iters=100):
         """Initialize mixture components.
 
@@ -82,20 +99,7 @@ class GMM(object):
             raise NotImplemented(
                 '%s initialization not yet implemented' % init_method)
 
-        # Choose an initial assignment of instances to components using
-        # the specified init_method. This also initializes the component
-        # parameters based on the assigned data instances.
-        n, f = X.shape  # number of instances, number of features
-        self.labels = np.arange(self.K)
-
-        if init_method == 'kmeans':
-            centroids, self.z = spvq.kmeans2(X, K, minit='points', iter=iters)
-            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
-        elif init_method == 'random':
-            self.z = np.random.randint(0, K, n)
-            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
-        elif init_method == 'load':
-            pass
+        return self._init_comps(X, init_method, iters)
 
     def fit(self, X, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
@@ -116,6 +120,7 @@ class GMM(object):
 
         # Set alpha to K by default if not given.
         # Setting to K makes the Dirichlet uniform over the components.
+        K = self.K
         alpha = self.alpha
         alpha_k = self.alpha / K
 
@@ -229,8 +234,208 @@ class GMM(object):
         return np.exp(self.llikelihood())
 
 
+class IGMM(GMM):
+    """Infinite Gaussian Mixture Model using Dirichlet Process prior."""
+
+    def __init__(self, K, alpha=0.0):
+        """Initialize top-level parameters for Gaussian Mixture Model.
+
+        Args:
+            K (int): Fixed number of components.
+            alpha (float): Dirichlet hyper-parameter alpha; defaults to K.
+        """
+        self.K = K
+        self.alpha = alpha if alpha else float(K)
+
+        # These are the parameters that will be fit.
+        self._comps = np.array([])
+        self.z = np.array([])
+
+    @property
+    def comps(self):
+        return self._comps[~np.equal(self._comps, None)]
+
+    @comps.setter
+    def comps(self, comps):
+        self._comps = np.array(comps, dtype=object)
+
+    def add_component(self, old_k, X, i):
+        """Add new component containing X[i].
+        Reuse old_k component if possible.
+        """
+        new_k = self.K
+
+        if self._comps[old_k].is_empty:
+            # reuse old component rather than adding a new one.
+            self._comps[old_k].add_instance(k)
+
+
+        else:  # add new component
+            # Update K and resize component array if necessary.
+            self.K += 1
+            size = self._comps.shape[0]
+            if self.K > size:
+                self._comps.resize(size * 2)
+                self._comps[self.K - 1:] = None  # -1 because we just added 1
+
+            # use empty space in comps if it exists.
+            new_k = np.nonzero(np.equal(self._comps, None))[0][0]
+            self.z[i] = new_k
+            self._comps[new_k] = GaussianComponent(X, self.z == new_k)
+
+    def rm_component(self, k):
+        """Remove component k from components being tracked."""
+        try:
+            self.comps[k] = None
+        except IndexError:
+            raise IndexError(
+                'trying to remove component %d '
+                'but there are only %d components' % (k, self.K))
+        self.K -= 1
+
+    def _init_comps(self, X, init_method='kmeans', iters=100):
+        """Choose an initial assignment of instances to components using
+        the specified init_method. This also initializes the component
+        parameters based on the assigned data instances.
+        """
+        n, f = X.shape  # number of instances, number of features
+        self.labels = np.arange(self.K)
+        self._comps = np.array([None] * (self.K * 2), dtype=object)
+
+        if init_method == 'kmeans':
+            centroids, self.z = spvq.kmeans2(X, self.K, minit='points', iter=iters)
+            self._comps[:self.K] = np.array([
+                GaussianComponent(X, self.z == k) for k in self.labels],
+                dtype=object)
+
+        elif init_method == 'random':
+            self.z = np.random.randint(0, self.K, n)
+            self._comps[:self.K] = np.array([
+                GaussianComponent(X, self.z == k) for k in self.labels],
+                dtype=object)
+
+        elif init_method == 'load':
+            pass
+
+    def fit(self, X, init_method='kmeans', iters=100,
+            nsamples=220, burnin=20, thin_step=2):
+        """Fit the parameters of the model using the data X.
+        See `init_comps` method for info on parameters not listed here.
+
+        Args:
+            X (np.ndarray): Data matrix with instances as rows.
+            nsamples (int): Number of Gibbs samples to draw.
+            burnin (int): Number of Gibbs samples to discard.
+            thin_step (int): Stepsize for thinning to reduce autocorrelation.
+        """
+        self.nsamples = nsamples
+        self.burnin = burnin
+        self.thin_step = thin_step
+        self.init_comps(X, init_method, iters)
+        n, f = X.shape
+
+        # Set alpha to K by default if not given.
+        # Setting to K makes the Dirichlet uniform over the components.
+        alpha = self.alpha
+        alpha_k = self.alpha / self.K
+        base_distrib = GaussianComponent(X, np.zeros(n).astype(bool))
+
+        # We'll use this for our conditional multinomial probs.
+        Pk = np.zeros(self.K * 2)
+        denom = float(n + alpha - 1)
+
+        # Init trace vars for parameters.
+        keeping = self.nsamples - self.burnin
+        store = int(keeping / 2)
+        pi = np.ndarray(store, object)     # mixture weights
+        H_ik = np.ndarray((store, n), object)  # posterior mixture responsibilities
+        mu = np.ndarray(store, object)     # component means
+        Sigma = np.ndarray(store, object)  # component covariance matrices
+        ll = np.ndarray(store, float)      # log-likelihood at each step
+
+        print('initial log-likelihood: %.3f' % self.llikelihood())
+
+        # Run collapsed Gibbs sampling to fit the model.
+        indices = np.arange(n)
+        for iternum in range(self.nsamples):
+            logging_iter = iternum % self.thin_step == 0
+            saving_sample = logging_iter and (iternum >= self.burnin - 1)
+            if saving_sample:
+                idx = (iternum - self.burnin) / self.thin_step
+
+            for i in np.random.permutation(indices):
+                x = X[i]
+
+                # Remove X[i]'s stats from component z[i].
+                old_k = self.z[i]
+                self.comps[old_k].rm_instance(i)
+
+                # The component may now be empty, but we keep it since it has
+                # cached stats. It will have same probability as base
+                # distribution, so we may be able to reuse it if the base
+                # distribution is selected.
+
+                # Calculate probability of instance belonging to each
+                # currently non-empty component.
+                # Calculate P(z[i] = k | z[-i], alpha)
+                weights = self.counts / denom
+
+                # Calculate P(X[i] | X[-i], pi, mu, sigma)
+                probs = np.array([comp.pp.pdf(x) for comp in self.comps])
+
+                # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
+                Pk[:self.K] = probs * weights
+
+                # Calculate probability of instance belonging to new
+                # component k*.
+                prior_predictive = base_distrib.pp.pdf(x)
+                weight = alpha / denom
+                Pk[self.K] = prior_predictive * weight
+
+                # Normalize probabilities.
+                next_k = self.K + 1
+                Pk[:next_k] = Pk[:next_k] / Pk[:next_k].sum()
+
+                # Sample new component for X[i] using normalized probs.
+                new_k = np.nonzero(np.random.multinomial(1, Pk[:next_k]))[0][0]
+
+                # If new component was selected, add to tracked components.
+                if new_k == self.K:
+                    self.add_component(old_k, X, i)
+                    if self.K >= Pk.shape[0]:
+                        Pk = np.resize(Pk, Pk.shape[0] * 2)
+                else:  # Old component selected, add data instance to it.
+                    self.comps[new_k].add_instance(i)
+                    self.z[i] = new_k
+
+                # Wait to remove components until the end; an empty component
+                # will simply serve as the base distribution. This may lead to
+                # some extra computation due to checking what is essentially two
+                # base distributions. However, it's likely to be less overhead
+                # than actually removing and re-adding components.
+
+                # save posterior responsibility each component takes for
+                # explaining data instance i
+                if saving_sample:
+                    H_ik[idx, i] = Pk
+
+            if logging_iter:
+                llik = self.llikelihood()
+                print('sample %d, log-likelihood: %.3f' % (iternum, llik))
+
+                if saving_sample:
+                    pi[idx] = Pk[:next_k].copy()
+                    stats = [comp.posterior.rvs() for comp in self.comps]
+                    mu[idx] = np.r_[[stat[0] for stat in stats]]
+                    Sigma[idx] = np.r_[[stat[1] for stat in stats]]
+                    ll[idx] = llik
+
+        return ll, H_ik, pi, mu, Sigma
+
+
 if __name__ == "__main__":
     np.random.seed(1234)
+    np.seterr('raise')
 
     M = 100            # number of samples per component
     K = 2              # initial guess for number of clusters
@@ -244,13 +449,18 @@ if __name__ == "__main__":
     true_z = np.concatenate([[k] * M for k in range(K)])
 
     # Initialize and fit Gaussian Mixture Model.
-    gmm = GMM(K)
-    ll, H_ik, pi, mu, Sigma = gmm.fit(X, init_method=method, nsamples=100, burnin=10)
+    # gmm = GMM(K)
+    # ll, H_ik, pi, mu, Sigma = gmm.fit(
+    #     X, init_method=method, nsamples=100, burnin=10)
+
+    igmm = IGMM(K)
+    ll, H_ik, pi, mu, Sigma = igmm.fit(
+        X, init_method=method, nsamples=100, burnin=10)
 
     # Calculate expectations using Monte Carlo estimates.
-    E = {
-        'H_ik': H_ik.mean(0),
-        'pi': pi.mean(0),
-        'mu': mu.mean(0),
-        'Sigma': Sigma.mean(0)
-    }
+    # E = {
+    #     'H_ik': H_ik.mean(0),
+    #     'pi': pi.mean(0),
+    #     'mu': mu.mean(0),
+    #     'Sigma': Sigma.mean(0)
+    # }
