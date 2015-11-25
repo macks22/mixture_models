@@ -1,3 +1,7 @@
+"""
+EM Algorithm for Gaussian Mixture Model (GMM).
+
+"""
 import sys
 import logging
 import argparse
