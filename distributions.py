@@ -92,16 +92,73 @@ multivariate_t = multivariate_t_gen()
 class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
     def __init__(self, mean, cov, df):
-        self.mean = mean
+        self._mean = np.array(mean)
         self.cov = cov
         self.df = df
         self._dist = multivariate_t
 
+    @property
+    def mean(self):
+        return self._mean
+
+    @mean.setter
+    def mean(self, mean):
+        if self.cov.shape[0] != mean.shape[0]:
+            raise ValueError(
+                'incompatible shape: cov.shape[0] != mean.shape[0] '
+                '(%d != %d)' % (self.cov.shape[0], mean.shape[0]))
+
+        self._mean = mean
+
+    @property
+    def cov(self):
+        return self._cov
+
+    @cov.setter
+    def cov(self, cov):
+        if self.mean.shape[0] != cov.shape[0]:
+            raise ValueError(
+                'incompatible shape: mean.shape[0] != cov.shape[0] '
+                '(%d != %d)' % (self.mean.shape[0], mean.shape[0]))
+
+        if not (cov.T == cov).all():
+            raise ValueError('cov matrix must be symmetric')
+
+        self._cov = cov
+        self._cholesky = sp.linalg.cholesky(cov)
+        self._sum_lndiag = np.log(np.diag(self._cholesky)).sum()
+
+    @property
+    def df(self):
+        return self._df
+
+    @df.setter
+    def df(self, df):
+        p = self.mean.shape[0]
+        if df < p:
+            raise ValueError('degrees of freedom must be >= %d' % p)
+
+        self._df = df
+        self._half_dfp = (df + p) / 2.
+        self._df_terms = (spsp.gammaln(self._half_dfp)
+                          - spsp.gammaln(df / 2.)
+                          - (p / 2.) * np.log(np.pi * df))
+
     def pdf(self, x):
-        return self._dist.pdf(x, self.mean, self.cov, self.df)
+        return np.exp(self.logpdf(x))
 
     def logpdf(self, x):
-        return self._dist.pdf(x, self.mean, self.cov, self.df)
+        """Multivariate Students-t log probability density function.
+        """
+        if self.df == 0 or np.isinf(self.df):
+            return stats.multivariate_normal.logpdf(x, self.mean, self.cov)
+
+        sols = sp.linalg.solve(self._cholesky, x - self.mean)
+        rss = (sols ** 2).sum()
+
+        return (self._df_terms
+                - self._sum_lndiag
+                - self._half_dfp * np.log1p(rss / self.df))
 
     def rvs(self, size):
         return self._dist.rvs(self.mean, self.cov, self.df, size)
@@ -110,12 +167,6 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 class GIW(object):
     """Gaussian-Inverse Wishart distribution."""
     __slots__ = ['mu', 'kappa', 'nu', 'Psi']
-
-    # def __init__(self, d, mu=None, k=None, nu=None, Psi=None):
-        # self.mu0 = np.zeros(d) if mu is None else mu
-        # self.k0 = 1.0 if k is None else k
-        # self.nu0 = d + 2 if nu is None else nu
-        # self.Psi0 = np.eye(d) * self.nu0 if Psi is None else Psi
 
     def __init__(self, mu, kappa, nu, Psi):
         self.mu = mu
@@ -134,7 +185,10 @@ class GIW(object):
         mu = stats.multivariate_normal.rvs(self.mu, cov / self.kappa)
         return mu, cov
 
-    def conjugate_updates(self, n, xbar, S):
+    def copy(self):
+        return GIW(self.mu, self.kappa, self.nu, self.Psi)
+
+    def conjugate_updates(self, n, xbar, S, obj=None):
         """Return GIW with conjugate hyper-parameter updates given sufficient
         statistics.
 
@@ -142,6 +196,8 @@ class GIW(object):
             xbar (np.ndarray): 1 x d sample mean from data matrix X.
             S (np.ndarray):  d x d sample sum of squared deviations from X.
             n (int): Number of samples observed (rows in X).
+            obj (GIW): Update the instance variables of this object to be the
+                posteriors resulting from the conjugate updates.
         """
         kappa = self.kappa + n
         nu = self.nu + n
@@ -152,5 +208,12 @@ class GIW(object):
             ((self.kappa * n) / kappa) * dev[:, None].dot(dev[None, :])
         Psi = self.Psi + S + uncertainty
 
-        return GIW(mu, kappa, nu, Psi)
+        if obj is not None:
+            GIW.__init__(obj, mu, kappa, nu, Psi)
+        else:
+            return GIW(mu, kappa, nu, Psi)
 
+    def mean(self):
+        """Return expected value for mu, Sigma."""
+        Sigma = self.Psi / (self.nu - self.Psi.shape[0] - 1)
+        return self.mu, Sigma

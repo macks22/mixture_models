@@ -48,22 +48,18 @@ class Gaussian(object):
         if self.prior is None:
 
             # Init mu ~ Normal hyperparams.
-            mu = self.X.sum(0)
+            mu = self.X.mean(0)
             kappa = 1.0
 
             # Init Sigma ~ Inv-Wishart hyperparams.
             nu = self.nf + 2
             Psi = np.eye(self.nf) * nu
-            # dev = self.X - self.mu0
-            # self.Psi0 = dev.T.dot(dev) / X.shape[0]
-            # self.Psi0 = np.cov(self.X, rowvar=0) * (self.nu0 - self.nf - 1)
 
             self.prior = GIW(mu, kappa, nu, Psi)
 
-        # The conjugate udpate for S uses a term that only depends on
-        # these hyper-parameters. Cache that now for efficiency.
-        # self._prior_sqmean = self.k0 * self.mu0[:, None].dot(self.mu0[None, :])
-        # self._prior_sqmean += self.Psi0
+        # These are set during fitting.
+        self.posterior = self.prior.copy()
+        self.pp = multivariate_t(mu, Psi, nu)  # placeholder values
 
         # The precision matrix is the inverse of the covariance.
         # Whenever it is asked for, we'll need to get the inverse of
@@ -83,9 +79,9 @@ class Gaussian(object):
         self._X = X
 
         # Cache stats used during fitting.
-        # n = self.n
-        # self._S = self.X.T.dot(self.X) # sample sum of squares
-        # self._xbar = self.X.sum(0) if n else np.zeros(self.nf) # sample mean
+        n = self.n
+        self._ssq = self.X.T.dot(self.X) # sample sum of squares
+        self._xbar = self.X.mean(0) if n else np.zeros(self.nf) # sample mean
 
     @property
     def n(self):
@@ -111,16 +107,33 @@ class Gaussian(object):
             self._precision = np.linalg.inv(self.cov)
         return self._precision
 
+    @property
+    def mean(self):
+        return self.prior.mu
+
+    @property
+    def cov(self):
+        return self.prior.Psi / (self.prior.nu - self.prior.Psi.shape[0] - 1)
+
+    @property
+    def sample_mean(self):
+        return self._xbar
+
+    @property
+    def sample_sum_squares(self):
+        return self._ssq
+
     def sufficient_stats(self):
         """Return sample size, mean, and sum of squared deviations."""
-        xbar = self.X.sum(0)
+        xbar = self.X.mean(0)
         dev = self.X - xbar
         S = dev.T.dot(dev)
         return self.n, xbar, S
 
-    def conjugate_updates(self):
+    def fit_posterior(self):
         """Return conjugate hyper-parameter updates based on observations X."""
-        return self.prior.conjugate_updates(*self.sufficient_stats())
+        n, xbar, S = self.sufficient_stats()
+        self.prior.conjugate_updates(n, xbar, S, self.posterior)
 
     def add_instance(self, i):
         """Add an instance to this Gaussian component.
@@ -131,7 +144,7 @@ class Gaussian(object):
 
         # Add sufficient stats to the cached stats.
         # x = self._X[i]
-        # self._S += x[:, None].dot(x[None, :])
+        # self._ssq += x[:, None].dot(x[None, :])
         # self._xbar = (self._xbar * self.n + x) / (self.n + 1)
 
         self._instances[i] = True
@@ -143,7 +156,7 @@ class Gaussian(object):
 
         # Remove sufficient stats from cached stats.
         # x = self._X[i]
-        # self._S -= x[:, None].dot(x[None, :])
+        # self._ssq -= x[:, None].dot(x[None, :])
         # new_n = self.n - 1
         # if new_n == 0:
         #     self._xbar[:] = 0
@@ -160,15 +173,14 @@ class Gaussian(object):
 
         Eqs. (8) and (15) in Kamper's guide.
         """
-        self.posterior = self.conjugate_updates()
-        self.mean, self.cov = self.posterior.rvs()
+        self.fit_posterior()
 
         # Posterior predictive parameter calculations.
         # Eq. (15) from Kamper's guide.
-        pp_df = self.posterior.nu - self.nf + 1
-        pp_cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
-                   / (self.posterior.kappa * pp_df))
-        self.pp = multivariate_t(self.posterior.mu, pp_cov, pp_df)
+        self.pp.mean = self.posterior.mu
+        self.pp.df = self.posterior.nu - self.nf + 1
+        self.pp.cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
+                       / (self.posterior.kappa * self.pp.df))
 
     def pdf(self, x):
         """Multivariate normal probability density function."""
@@ -223,14 +235,14 @@ class GMM(object):
         if self.comps is None:
             return 0
         else:
-            return sum(comp.n for comp in self.comps.values())
+            return sum(comp.n for comp in self.comps)
 
     @property
     def nf(self):
         if self.comps is None:
             return 0
         else:
-            return self.comps.values()[0].nf
+            return self.comps[0].nf
 
     def fit(self, X, alpha=0.0, init_method='kmeans', iters=100):
         """Fit the parameters of the model using the data X.
@@ -265,10 +277,10 @@ class GMM(object):
 
         if init_method == 'kmeans':
             centroids, self.z = spvq.kmeans2(X, K, minit='points', iter=iters)
-            self.comps = {k: Gaussian(X, self.z == k) for k in comp_labels}
+            self.comps = [Gaussian(X, self.z == k) for k in comp_labels]
         elif init_method == 'random':
             self.z = np.random.randint(0, K, n)
-            self.comps = {k: Gaussian(X, self.z == k) for k in comp_labels}
+            self.comps = [Gaussian(X, self.z == k) for k in comp_labels]
         elif init_method == 'load':
             pass
 
@@ -340,28 +352,12 @@ class GMM(object):
                 if iternum >= (self.burnin - 1):
                     i = (iternum - self.burnin) / self.thin_step
                     pi[i] = Pk
-                    comps = [comp for comp in self.comps.values()]
-                    mu[i] = np.r_[[comp.mean for comp in comps]]
-                    Sigma[i] = np.r_[[comp.cov for comp in comps]]
+                    stats = [comp.posterior.rvs() for comp in self.comps]
+                    mu[i] = np.r_[[stat[0] for stat in stats]]
+                    Sigma[i] = np.r_[[stat[1] for stat in stats]]
                     ll[i] = llik
 
         return ll, pi, mu, Sigma
-
-    def label_likelihood(self):
-        """Calculate P(z | alpha), the marginal likelihood of the component
-        instance assignments.
-
-        Eq. (22) from Kamper's guide.
-        """
-        alpha = self.alpha
-        alpha_k = alpha / self.K
-        lik = spsp.gamma(alpha) / spsp.gamma(self.n + alpha)
-
-        gam_alpha_k = spsp.gamma(alpha_k)
-        numerators = np.array([comp.n for comp in self.comps.values()])\
-                        .astype(np.float) + alpha_k
-        lik *= np.product(spsp.gamma(numerators))
-        return lik
 
     def label_llikelihood(self):
         """Calculate ln(P(z | alpha)), the marginal log-likelihood of the
@@ -373,25 +369,16 @@ class GMM(object):
         alpha_k = alpha / self.K
 
         llik = spsp.gammaln(alpha) - spsp.gammaln(self.n + alpha)
-        counts = np.array([comp.n for comp in self.comps.values()])\
+        counts = np.array([comp.n for comp in self.comps])\
                    .astype(np.float) + alpha_k
         llik += (spsp.gammaln(counts) - spsp.gammaln(alpha_k)).sum()
         return llik
 
-    def likelihood(self):
-        """Calculate P(X, z | alpha, pi, mu, Sigma), the marginal likelihood
-        of the data and the component instance assignments given the parameters
-        and hyper-parameters.
-
-        This can be used as a convergence metric. We expect to see this
-        likelihood increase as sampling proceeds.
-
-        Eq. (29) from Kamper's guide.
+    def label_likelihood(self):
+        """Calculate P(z | alpha), the marginal likelihood of the component
+        instance assignments.
         """
-        lik = self.label_likelihood()
-        lik *= np.product([
-            comp.likelihood() for comp in self.comps.values()])
-        return lik
+        return np.exp(self.label_llikelihood())
 
     def llikelihood(self):
         """Calculate ln(P(X, z | alpha, pi, mu, Sigma)), the marginal
@@ -404,8 +391,15 @@ class GMM(object):
         Eq. (29) from Kamper's guide.
         """
         llik = self.label_llikelihood()
-        llik += np.sum([comp.llikelihood() for comp in self.comps.values()])
+        llik += np.sum([comp.llikelihood() for comp in self.comps])
         return llik
+
+    def likelihood(self):
+        """Calculate P(X, z | alpha, pi, mu, Sigma), the marginal likelihood
+        of the data and the component instance assignments given the parameters
+        and hyper-parameters.
+        """
+        return np.exp(self.llikelihood())
 
 
 if __name__ == "__main__":
@@ -416,10 +410,17 @@ if __name__ == "__main__":
     method = 'kmeans'  # parameter initialization method
 
     # Generate two 2D Gaussians
-    X = np.r_[
-        stats.multivariate_normal.rvs([-5, -7], 2, M),
-        stats.multivariate_normal.rvs([5, 7], 4, M)
-    ]
+    # X = np.r_[
+    #     stats.multivariate_normal.rvs([-5, -7], 2, M),
+    #     stats.multivariate_normal.rvs([5, 7], 4, M)
+    # ]
+
+    # 2, 2-dimensional Gaussians
+    n_samples = M
+    C = np.array([[0., -0.1], [1.7, .4]])
+    X = np.r_[np.dot(np.random.randn(n_samples, 2), C),
+              .7 * np.random.randn(n_samples, 2) + np.array([-6, 3])]
+
     true_z = np.concatenate([[k] * M for k in range(K)])
     n, nf = X.shape  # number of instances, number of features
 
