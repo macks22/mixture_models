@@ -6,10 +6,53 @@ import numpy as np
 import scipy as sp
 import scipy.stats as stats
 import scipy.special as spsp
-import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
 from distributions import multivariate_t, GIW
+
+
+class GaussianComponentCache(object):
+    slots = ['xbar', 'ssq', 'mu', 'kappa', 'nu', 'Psi', 'ppc', 'ppdf']
+
+    def __init__(self, f):
+        """Allocate space for cache variables based on number of features f."""
+        self.xbar = np.zeros(f)
+        self.ssq = np.zeros((f, f))
+
+        self.mu = np.zeros(f)
+        self.kappa = 0
+        self.nu = 0
+        self.Psi = np.zeros((f, f))
+
+        # self.ppm = np.zeros(f)  -> posterior predictive mean = mu
+        self.ppc = np.zeros((f, f))
+        self.ppdf = 0
+
+    def store(self, xbar, ssq, mu, kappa, nu, Psi, ppc, ppdf):
+        """Store stats as instance variables."""
+        self.xbar[:] = xbar
+        self.ssq[:] = ssq
+
+        self.mu[:] = mu
+        self.kappa = kappa
+        self.nu = nu
+        self.Psi[:] = Psi
+
+        self.ppc[:] = ppc
+        self.ppdf = ppdf
+
+    def restore(self, comp):
+        """Restore cached stats to component instance variables."""
+        comp._xbar[:] = self.xbar
+        comp._ssq[:] = self.ssq
+
+        comp.posterior.mu[:] = self.mu
+        comp.posterior.kappa = self.kappa
+        comp.posterior.nu = self.nu
+        comp.posterior.Psi[:] = self.Psi
+
+        comp.pp.cov[:] = self.ppc
+        comp.pp.df = self.ppdf
 
 
 class GaussianComponent(object):
@@ -60,6 +103,14 @@ class GaussianComponent(object):
         # These are set during fitting.
         self.posterior = self.prior.copy()
         self.pp = multivariate_t(mu, Psi, nu)  # placeholder values
+
+        # When adding/removing instances from the components during fitting,
+        # the same instance will often be added back immediately. We look for
+        # case and avoid recomputing the sufficient stats, posterior, and
+        # posterior predictive. Initially the cache is empty. We cache before
+        # removing an instance.
+        self._cache = GaussianComponentCache(self.nf)
+        self._last_i_removed = -1
 
         # The precision matrix is the inverse of the covariance.
         # Whenever it is asked for, we'll need to get the inverse of
@@ -120,30 +171,28 @@ class GaussianComponent(object):
         return self.n, self._xbar, self._ssq
 
     def fit_posterior(self):
-        """Return conjugate hyper-parameter updates based on observations X."""
+        """Update posterior using conjugate hyper-parameter updates based on
+        observations X.
+        """
         self.prior.conjugate_updates(
             self.n, self._xbar, self._ssq, self.posterior)
 
-    def add_instance(self, i):
-        """Add an instance to this Gaussian component.
-        This is done by setting element i of the `instances` mask to True.
-        """
-        if self._instances[i]:  # already in component
-            return
+    def _cache_stats(self):
+        self._cache.store(
+            self._xbar, self._ssq, self.posterior.mu, self.posterior.kappa,
+            self.posterior.nu, self.posterior.Psi, self.pp.cov, self.pp.df)
 
-        # Add sufficient stats to the cached stats.
-        x = self._X[i]
-        self._ssq += x[:, None].dot(x[None, :])
-        self._xbar = (self._xbar * self.n + x) / (self.n + 1)
-
-        self._instances[i] = True
-        self.fit()
+    def _restore_from_cache(self):
+        self._cache.restore(self)
 
     def rm_instance(self, i):
         if not self._instances[i]:
             raise IndexError('index %i not currently in component' % i)
 
-        # Remove sufficient stats from cached stats.
+        self._cache_stats()
+        self._last_i_removed = i
+
+        # Remove sufficient stats from sample mean & sum of squares.
         x = self._X[i]
         self._ssq -= x[:, None].dot(x[None, :])
         new_n = self.n - 1
@@ -154,6 +203,24 @@ class GaussianComponent(object):
 
         self._instances[i] = False  # remove instance
         self.fit()  # handles empty component case
+
+    def add_instance(self, i):
+        """Add an instance to this Gaussian component.
+        This is done by setting element i of the `instances` mask to True.
+        """
+        if self._instances[i]:  # already in component
+            return
+
+        if self._last_i_removed == i:
+            self._restore_from_cache()
+        else:
+            # Add sufficient stats to the cached stats.
+            x = self._X[i]
+            self._ssq += x[:, None].dot(x[None, :])
+            self._xbar = (self._xbar * self.n + x) / (self.n + 1)
+            self.fit()
+
+        self._instances[i] = True
 
     def fit(self):
         """Perform conjugate updates of the GIW prior parameters to compute the

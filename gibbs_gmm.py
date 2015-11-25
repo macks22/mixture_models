@@ -146,8 +146,8 @@ class GMM(object):
                 x = X[i]
 
                 # Remove X[i]'s stats from component z[i].
-                k = self.z[i]
-                self.comps[k].rm_instance(i)
+                old_k = self.z[i]
+                self.comps[old_k].rm_instance(i)
 
                 # Calculate probability of instance belonging to each comp.
                 # Calculate P(z[i] = k | z[-i], alpha)
@@ -163,11 +163,11 @@ class GMM(object):
                 Pk = Pk / Pk.sum()
 
                 # Sample new component for X[i] using normalized probs.
-                k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
+                new_k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
 
                 # Add X[i] to selected component. Sufficient stats are updated.
-                self.comps[k].add_instance(i)
-                self.z[i] = k
+                self.comps[new_k].add_instance(i)
+                self.z[i] = new_k
 
                 # save posterior responsibility each component takes for
                 # explaining data instance i
