@@ -166,7 +166,7 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
 class GIW(object):
     """Gaussian-Inverse Wishart distribution."""
-    __slots__ = ['mu', 'kappa', 'nu', 'Psi']
+    __slots__ = ['mu', 'kappa', 'nu', 'Psi', '_cache']
 
     def __init__(self, mu, kappa, nu, Psi):
         self.mu = mu
@@ -175,6 +175,9 @@ class GIW(object):
         self.Psi = Psi
         if nu < len(Psi):
             raise ValueError('nu0 must be >= len(Psi0)')
+
+        # Terms for Psi update invariant to data.
+        self._cache = Psi + kappa * mu[:, None].dot(mu[None, :])
 
     @property
     def d(self):
@@ -194,7 +197,7 @@ class GIW(object):
 
         Args:
             xbar (np.ndarray): 1 x d sample mean from data matrix X.
-            S (np.ndarray):  d x d sample sum of squared deviations from X.
+            S (np.ndarray): d x d sample sum of squares from X.
             n (int): Number of samples observed (rows in X).
             obj (GIW): Update the instance variables of this object to be the
                 posteriors resulting from the conjugate updates.
@@ -202,16 +205,10 @@ class GIW(object):
         kappa = self.kappa + n
         nu = self.nu + n
         mu = (self.kappa * self.mu + n * xbar) / kappa
+        Psi = self._cache + S - kappa * mu[:, None].dot(mu[None, :])
 
-        dev = xbar - self.mu
-        uncertainty = \
-            ((self.kappa * n) / kappa) * dev[:, None].dot(dev[None, :])
-        Psi = self.Psi + S + uncertainty
-
-        if obj is not None:
-            GIW.__init__(obj, mu, kappa, nu, Psi)
-        else:
-            return GIW(mu, kappa, nu, Psi)
+        return GIW(mu, kappa, nu, Psi) if obj is None else \
+               GIW.__init__(obj, mu, kappa, nu, Psi)
 
     def mean(self):
         """Return expected value for mu, Sigma."""

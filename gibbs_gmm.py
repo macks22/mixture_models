@@ -80,8 +80,8 @@ class Gaussian(object):
 
         # Cache stats used during fitting.
         n = self.n
-        self._ssq = self.X.T.dot(self.X) # sample sum of squares
         self._xbar = self.X.mean(0) if n else np.zeros(self.nf) # sample mean
+        self._ssq = self.X.T.dot(self.X) # sample sum of squares
 
     @property
     def n(self):
@@ -115,25 +115,14 @@ class Gaussian(object):
     def cov(self):
         return self.prior.Psi / (self.prior.nu - self.prior.Psi.shape[0] - 1)
 
-    @property
-    def sample_mean(self):
-        return self._xbar
-
-    @property
-    def sample_sum_squares(self):
-        return self._ssq
-
     def sufficient_stats(self):
-        """Return sample size, mean, and sum of squared deviations."""
-        xbar = self.X.mean(0)
-        dev = self.X - xbar
-        S = dev.T.dot(dev)
-        return self.n, xbar, S
+        """Return sample size, mean, and sum of squares."""
+        return self.n, self._xbar, self._ssq
 
     def fit_posterior(self):
         """Return conjugate hyper-parameter updates based on observations X."""
-        n, xbar, S = self.sufficient_stats()
-        self.prior.conjugate_updates(n, xbar, S, self.posterior)
+        self.prior.conjugate_updates(
+            self.n, self._xbar, self._ssq, self.posterior)
 
     def add_instance(self, i):
         """Add an instance to this Gaussian component.
@@ -143,9 +132,9 @@ class Gaussian(object):
             return
 
         # Add sufficient stats to the cached stats.
-        # x = self._X[i]
-        # self._ssq += x[:, None].dot(x[None, :])
-        # self._xbar = (self._xbar * self.n + x) / (self.n + 1)
+        x = self._X[i]
+        self._ssq += x[:, None].dot(x[None, :])
+        self._xbar = (self._xbar * self.n + x) / (self.n + 1)
 
         self._instances[i] = True
         self.fit()
@@ -155,13 +144,13 @@ class Gaussian(object):
             raise IndexError('index %i not currently in component' % i)
 
         # Remove sufficient stats from cached stats.
-        # x = self._X[i]
-        # self._ssq -= x[:, None].dot(x[None, :])
-        # new_n = self.n - 1
-        # if new_n == 0:
-        #     self._xbar[:] = 0
-        # else:
-        #     self._xbar = (self._xbar * self.n - x) / new_n
+        x = self._X[i]
+        self._ssq -= x[:, None].dot(x[None, :])
+        new_n = self.n - 1
+        if new_n == 0:
+            self._xbar[:] = 0
+        else:
+            self._xbar = (self._xbar * self.n - x) / new_n
 
         self._instances[i] = False  # remove instance
         self.fit()  # handles empty component case
@@ -227,22 +216,28 @@ class GMM(object):
         self.thin_step = thin_step
 
         # These are the parameters that will be fit.
-        self.comps = None
-        self.z = None
+        self.comps = []
+        self.z = []
+
+    @property
+    def counts(self):
+        return np.array([comp.n for comp in self.comps])
 
     @property
     def n(self):
-        if self.comps is None:
-            return 0
-        else:
-            return sum(comp.n for comp in self.comps)
+        return self.counts.sum()
 
     @property
     def nf(self):
-        if self.comps is None:
-            return 0
-        else:
-            return self.comps[0].nf
+        return 0 if self.comps is None else self.comps[0].nf
+
+    @property
+    def means(self):
+        return np.array([comp.mean for comp in self.comps])
+
+    @property
+    def covs(self):
+        return np.array([comp.cov for comp in self.comps])
 
     def fit(self, X, alpha=0.0, init_method='kmeans', iters=100):
         """Fit the parameters of the model using the data X.
@@ -315,27 +310,17 @@ class GMM(object):
                 self.comps[k].rm_instance(i)
 
                 # Calculate probability of instance belonging to each comp.
-                for k in comp_labels:
-                    comp = self.comps[k]
+                # Calculate P(z[i] = k | z[-i], alpha)
+                weights = (self.counts + alpha_k) / denom
 
-                    # Calculate P(z[i] = k | z[-i], alpha)
-                    weight = (comp.n + alpha_k) / denom
+                # Calculate P(X[i] | X[-i], pi, mu, sigma)
+                probs = np.array([comp.pp.pdf(x) for comp in self.comps])
 
-                    # Calculate P(X[i] | X[-i], pi, mu, sigma)
-                    prob = comp.pp.pdf(x)  # posterior predictive pdf
-                    # prob = comp.pp_logpdf(x)
-
-                    # print('k: %d, w=%.3e, p=%.3e' % (k, weight, prob))
-
-                    # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
-                    Pk[k] = prob * weight
-                    # Pk[k] = prob + np.log(weight)
+                # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
+                Pk[:] = probs * weights
 
                 # Normalize probabilities.
-                # Pk[np.isnan(Pk)] = 0
-                # Pk = abs(Pk)  # TEMP
                 Pk = Pk / Pk.sum()
-                # print(Pk)
 
                 # Sample new component for X[i] using normalized probs.
                 k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
@@ -369,8 +354,7 @@ class GMM(object):
         alpha_k = alpha / self.K
 
         llik = spsp.gammaln(alpha) - spsp.gammaln(self.n + alpha)
-        counts = np.array([comp.n for comp in self.comps])\
-                   .astype(np.float) + alpha_k
+        counts = self.counts.astype(np.float) + alpha_k
         llik += (spsp.gammaln(counts) - spsp.gammaln(alpha_k)).sum()
         return llik
 
@@ -410,16 +394,16 @@ if __name__ == "__main__":
     method = 'kmeans'  # parameter initialization method
 
     # Generate two 2D Gaussians
-    # X = np.r_[
-    #     stats.multivariate_normal.rvs([-5, -7], 2, M),
-    #     stats.multivariate_normal.rvs([5, 7], 4, M)
-    # ]
+    X = np.r_[
+        stats.multivariate_normal.rvs([-5, -7], 2, M),
+        stats.multivariate_normal.rvs([5, 7], 4, M)
+    ]
 
     # 2, 2-dimensional Gaussians
-    n_samples = M
-    C = np.array([[0., -0.1], [1.7, .4]])
-    X = np.r_[np.dot(np.random.randn(n_samples, 2), C),
-              .7 * np.random.randn(n_samples, 2) + np.array([-6, 3])]
+    # n_samples = M
+    # C = np.array([[0., -0.1], [1.7, .4]])
+    # X = np.r_[np.dot(np.random.randn(n_samples, 2), C),
+    #           .7 * np.random.randn(n_samples, 2) + np.array([-6, 3])]
 
     true_z = np.concatenate([[k] * M for k in range(K)])
     n, nf = X.shape  # number of instances, number of features
