@@ -9,71 +9,13 @@ import scipy.special as spsp
 import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
-
-def precision(X):
-    return np.linalg.inv(np.cov(X, rowvar=False))
-
-def mvstdt_pdf(x, mean, cov, df):
-    """Multivariate Students-t probability density function.
-
-    From Wikipedia: https://en.wikipedia.org/wiki/Multivariate_t-distribution.
-
-    Args:
-        x (np.ndarray): 1 x p data vector observation.
-        mean (np.ndarray): 1 x p mean vector of the Students-t.
-        cov (np.ndarray): p x p covariance matrix of the Students-t.
-        df (int): Scalar degrees of freedom of the Students-t.
-
-    Returns:
-        (float): The probability of observing x from a multivariate Students-t
-            distribution with the given parameters.
-    """
-    p = len(x)  # dimension, should match mean and cov
-    half_dfp = (df + p) * 0.5
-    num = spsp.gamma(half_dfp)
-
-    half_p = p * 0.5
-    denom = spsp.gamma(df * 0.5) * ((df * np.pi) ** half_p)
-    denom *= np.linalg.det(cov) ** 0.5
-
-    dev = x - mean
-    tmp = dev.dot(np.linalg.inv(cov)).dot(dev)
-    denom *= (1 + (1. / df) * tmp) ** half_dfp
-
-    return num / denom
-
-
-def mvstdt_logpdf(x, mean, cov, df):
-    """Multivariate Students-t log probability density function.
-
-    From Wikipedia: https://en.wikipedia.org/wiki/Multivariate_t-distribution.
-
-    Args:
-        x (np.ndarray): 1 x p data vector observation.
-        mean (np.ndarray): 1 x p mean vector of the Students-t.
-        cov (np.ndarray): p x p covariance matrix of the Students-t.
-        df (int): Scalar degrees of freedom of the Students-t.
-
-    Returns:
-        (float): The probability of observing x from a multivariate Students-t
-            distribution with the given parameters.
-    """
-    p = len(x)
-    dev = x - mean
-    r = dev.dot(np.linalg.inv(cov)).dot(dev)
-    half_dfp = (df + p) * 0.5
-    half_p = p * 0.5
-    logdf = np.log(df)
-    return (spsp.gammaln(half_dfp) - spsp.gammaln(half_p)
-            - half_p * (logdf + np.log(np.pi))
-            - 0.5 * np.log(np.linalg.det(cov))
-            - half_dfp * (np.log(r) - logdf))
+from distributions import multivariate_t, GIW
 
 
 class Gaussian(object):
     """Multivariate Gaussian distribution; for use as mixture component."""
 
-    def __init__(self, X, instances):
+    def __init__(self, X, instances, prior=None):
         """Assign some subset `instances` of the data `X` to this component.
         We use a boolean mask on the rows of X for efficient add/remove
         for data instances. This is important for the collapsed Gibbs sampling
@@ -99,17 +41,24 @@ class Gaussian(object):
             instances (np.ndarray): Boolean mask to select which rows of the
                 data matrix X belong to this component.
         """
-        self.instances = instances
+        self._instances = instances
         self.X = X
 
-        # Init mu ~ Normal hyperparams.
-        self.mu0 = self._xbar
-        self.k0 = 1.0
+        self.prior = prior
+        if self.prior is None:
 
-        # Init Sigma ~ Inv-Wishart hyperparams.
-        self.nu0 = self.nf + 2
-        dev = X - self._xbar
-        self.Psi0 = dev.T.dot(dev)
+            # Init mu ~ Normal hyperparams.
+            mu = self.X.sum(0)
+            kappa = 1.0
+
+            # Init Sigma ~ Inv-Wishart hyperparams.
+            nu = self.nf + 2
+            Psi = np.eye(self.nf) * nu
+            # dev = self.X - self.mu0
+            # self.Psi0 = dev.T.dot(dev) / X.shape[0]
+            # self.Psi0 = np.cov(self.X, rowvar=0) * (self.nu0 - self.nf - 1)
+
+            self.prior = GIW(mu, kappa, nu, Psi)
 
         # The conjugate udpate for S uses a term that only depends on
         # these hyper-parameters. Cache that now for efficiency.
@@ -127,16 +76,16 @@ class Gaussian(object):
 
     @property
     def X(self):
-        return self._X[self.instances]
+        return self._X[self._instances]
 
     @X.setter
     def X(self, X):
         self._X = X
 
         # Cache stats used during fitting.
-        n = self.n
+        # n = self.n
         # self._S = self.X.T.dot(self.X) # sample sum of squares
-        self._xbar = self.X.sum(0) if n else np.zeros(self.nf) # sample mean
+        # self._xbar = self.X.sum(0) if n else np.zeros(self.nf) # sample mean
 
     @property
     def n(self):
@@ -162,11 +111,22 @@ class Gaussian(object):
             self._precision = np.linalg.inv(self.cov)
         return self._precision
 
+    def sufficient_stats(self):
+        """Return sample size, mean, and sum of squared deviations."""
+        xbar = self.X.sum(0)
+        dev = self.X - xbar
+        S = dev.T.dot(dev)
+        return self.n, xbar, S
+
+    def conjugate_updates(self):
+        """Return conjugate hyper-parameter updates based on observations X."""
+        return self.prior.conjugate_updates(*self.sufficient_stats())
+
     def add_instance(self, i):
         """Add an instance to this Gaussian component.
         This is done by setting element i of the `instances` mask to True.
         """
-        if self.instances[i]:  # already in component
+        if self._instances[i]:  # already in component
             return
 
         # Add sufficient stats to the cached stats.
@@ -174,11 +134,11 @@ class Gaussian(object):
         # self._S += x[:, None].dot(x[None, :])
         # self._xbar = (self._xbar * self.n + x) / (self.n + 1)
 
-        self.instances[i] = True
+        self._instances[i] = True
         self.fit()
 
     def rm_instance(self, i):
-        if not self.instances[i]:
+        if not self._instances[i]:
             raise IndexError('index %i not currently in component' % i)
 
         # Remove sufficient stats from cached stats.
@@ -190,7 +150,7 @@ class Gaussian(object):
         # else:
         #     self._xbar = (self._xbar * self.n - x) / new_n
 
-        self.instances[i] = False  # remove instance
+        self._instances[i] = False  # remove instance
         self.fit()  # handles empty component case
 
     def fit(self):
@@ -200,59 +160,19 @@ class Gaussian(object):
 
         Eqs. (8) and (15) in Kamper's guide.
         """
-        # Conjugate hyper-parameter updates.
-        n = self.n
-        kappa = self.k0 + n
-        nu = self.nu0 + n
-
-        self._xbar = self.X.sum(0)
-        mu = (self.k0 * self.mu0 + n * self._xbar) / kappa
-
-        dev = self.X - self._xbar
-        S = dev.T.dot(dev)
-        dev = self._xbar - self.mu0
-        Psi = (self.Psi0 + S
-                + ((self.k0 * n) / kappa)
-                  * dev[:, None].dot(dev[None, :]))
-
-        # Psi = (self._S + self._prior_sqmean
-        #         - kappa * mu[:, None].dot(mu[None, :]))
-
-        # Posterior parameter calculations.
-        self.cov = stats.invwishart.rvs(nu, Psi)
-        self.mean = stats.multivariate_normal.rvs(mu, self.cov / kappa)
+        self.posterior = self.conjugate_updates()
+        self.mean, self.cov = self.posterior.rvs()
 
         # Posterior predictive parameter calculations.
         # Eq. (15) from Kamper's guide.
-        self.pp_mean = mu
-        self.pp_df = nu - self.nf + 1
-        self.pp_cov = (Psi * (kappa + 1)) / (kappa * self.pp_df)
+        pp_df = self.posterior.nu - self.nf + 1
+        pp_cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
+                   / (self.posterior.kappa * pp_df))
+        self.pp = multivariate_t(self.posterior.mu, pp_cov, pp_df)
 
-        # Save conjugate updated hyper-params for marginal likelihood calcs.
-        self._kappa = kappa
-        self._nu = nu
-        self._Psi = Psi
-
-    # def pdf(self, x):
-    #     """Multivariate normal probability density function."""
-    #     return stats.multivariate_normal.pdf(x, self.mean, self.cov)
-
-    def likelihood(self):
-        """Compute marginal likelihood of data given the observed
-        data instances assigned to this component.
-
-        Eq. (266) from Murphy (2007).
-        """
-        half_d = self.nf * 0.5
-        nu_prior = self.nu0 * 0.5
-        nu_post = self._nu * 0.5
-
-        lik = (np.pi ** -(self.n * half_d)
-                * (spsp.gamma(nu_post) / spsp.gamma(nu_prior))
-                * ((np.linalg.det(self.Psi0) ** nu_prior)
-                    / (np.linalg.det(self._Psi) ** nu_post))
-                * ((self.k0 / self._kappa) ** half_d))
-        return lik
+    def pdf(self, x):
+        """Multivariate normal probability density function."""
+        return stats.multivariate_normal.pdf(x, self.mean, self.cov)
 
     def llikelihood(self):
         """Compute marginal log likelihood of data given the observed
@@ -261,27 +181,20 @@ class Gaussian(object):
         Eq. (266) from Murphy (2007).
         """
         half_d = self.nf * 0.5
-        nu_prior = self.nu0 * 0.5
-        nu_post = self._nu * 0.5
+        nu_prior = self.prior.nu * 0.5
+        nu_post = self.posterior.nu * 0.5
 
         return (spsp.gammaln(nu_post) - spsp.gammaln(nu_prior)
-                + nu_prior * np.log(np.linalg.det(self.Psi0))
-                - nu_post * np.log(np.linalg.det(self._Psi))
-                + half_d * (np.log(self.k0) - np.log(self._kappa))
+                + nu_prior * np.log(np.linalg.det(self.prior.Psi))
+                - nu_post * np.log(np.linalg.det(self.posterior.Psi))
+                + half_d * (np.log(self.prior.kappa) - np.log(self.posterior.kappa))
                 - (self.n * half_d) * np.log(np.pi))
 
-    def pp_pdf(self, x):
-        """Students-t posterior predictive density function."""
-        return mvstdt_pdf(x, self.pp_mean, self.pp_cov, self.pp_df)
-
-    def pp_logpdf(self, x):
-        """Students-t posterior predictive log density function."""
-        return mvstdt_logpdf(x, self.pp_mean, self.pp_cov, self.pp_df)
-
-    def pp_rvs(self, size):
-        """Samples from Students-t posterior predictive distribution."""
-        raise NotImplemented(
-            'random variables from posterior predictive not implemented')
+    def likelihood(self):
+        """Compute marginal likelihood of data given the observed
+        data instances assigned to this component.
+        """
+        return np.exp(self.llikelihood())
 
 
 class GMM(object):
@@ -397,14 +310,14 @@ class GMM(object):
                     weight = (comp.n + alpha_k) / denom
 
                     # Calculate P(X[i] | X[-i], pi, mu, sigma)
-                    prob = comp.pp_pdf(x)  # posterior predictive pdf
+                    prob = comp.pp.pdf(x)  # posterior predictive pdf
                     # prob = comp.pp_logpdf(x)
 
                     # print('k: %d, w=%.3e, p=%.3e' % (k, weight, prob))
 
                     # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
-                    # Pk[k] = prob * weight
-                    Pk[k] = prob + np.log(weight)
+                    Pk[k] = prob * weight
+                    # Pk[k] = prob + np.log(weight)
 
                 # Normalize probabilities.
                 # Pk[np.isnan(Pk)] = 0
@@ -413,7 +326,7 @@ class GMM(object):
                 # print(Pk)
 
                 # Sample new component for X[i] using normalized probs.
-                k = np.random.choice(comp_labels, p=Pk)
+                k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
 
                 # Add X[i] to selected component. Sufficient stats are updated.
                 self.comps[k].add_instance(i)
@@ -498,7 +411,7 @@ class GMM(object):
 if __name__ == "__main__":
     np.random.seed(1234)
 
-    M = 50           # number of samples per component
+    M = 100          # number of samples per component
     K = 2            # initial guess for number of clusters
     method = 'kmeans'  # parameter initialization method
 
@@ -510,5 +423,7 @@ if __name__ == "__main__":
     true_z = np.concatenate([[k] * M for k in range(K)])
     n, nf = X.shape  # number of instances, number of features
 
-    gmm = GMM(K)
+    gmm = GMM(K, nsamples=100, burnin=10)
     ll, pi, mu, Sigma = gmm.fit(X, init_method=method)
+
+    # TODO: samples for Sigma are way too big.
