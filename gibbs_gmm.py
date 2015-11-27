@@ -259,29 +259,25 @@ class IGMM(GMM):
     def comps(self, comps):
         self._comps = np.array(comps, dtype=object)
 
-    def add_component(self, old_k, X, i):
-        """Add new component containing X[i].
-        Reuse old_k component if possible.
+    def add_component(self, comp):
+        """Place the new component in an empty space in the components array and 
+        increment K. We assume the assignments z has already been updated.
         """
-        new_k = self.K
+        # Update K and resize component array if necessary.
+        self.K += 1
+        size = self._comps.shape[0]
+        if self.K > size:
+            self._comps.resize(size * 2)
+            self._comps[self.K - 1:] = None  # -1 because we just added 1
 
-        if self._comps[old_k].is_empty:
-            # reuse old component rather than adding a new one.
-            self._comps[old_k].add_instance(k)
+        new_k = np.nonzero(np.equal(self._comps, None))[0][0]
+        self._comps[new_k] = comp
 
-
-        else:  # add new component
-            # Update K and resize component array if necessary.
-            self.K += 1
-            size = self._comps.shape[0]
-            if self.K > size:
-                self._comps.resize(size * 2)
-                self._comps[self.K - 1:] = None  # -1 because we just added 1
-
-            # use empty space in comps if it exists.
-            new_k = np.nonzero(np.equal(self._comps, None))[0][0]
-            self.z[i] = new_k
-            self._comps[new_k] = GaussianComponent(X, self.z == new_k)
+    def add_component_with_instance(self, X, i):
+        """Add new component containing X[i]."""
+        new_k = np.nonzero(np.equal(self._comps, None))[0][0]
+        self.z[i] = new_k
+        self.add_component(GaussianComponent(X, self.z == new_k))
 
     def rm_component(self, k):
         """Remove component k from components being tracked."""
@@ -368,12 +364,15 @@ class IGMM(GMM):
 
                 # Remove X[i]'s stats from component z[i].
                 old_k = self.z[i]
-                self.comps[old_k].rm_instance(i)
+                old_comp = self.comps[old_k]
+                old_comp.rm_instance(i)
 
                 # The component may now be empty, but we keep it since it has
                 # cached stats. It will have same probability as base
                 # distribution, so we may be able to reuse it if the base
                 # distribution is selected.
+                if old_comp.is_empty:
+                    self.rm_component(old_k)
 
                 # Calculate probability of instance belonging to each
                 # currently non-empty component.
@@ -401,18 +400,17 @@ class IGMM(GMM):
 
                 # If new component was selected, add to tracked components.
                 if new_k == self.K:
-                    self.add_component(old_k, X, i)
+                    if comp.is_empty:
+                        # reuse old component.
+                        old_comp.add_instance(i)
+                        self.add_component(old_component)
+
+                    # Resize Pk if necessary for new component
                     if self.K >= Pk.shape[0]:
                         Pk = np.resize(Pk, Pk.shape[0] * 2)
                 else:  # Old component selected, add data instance to it.
                     self.comps[new_k].add_instance(i)
                     self.z[i] = new_k
-
-                # Wait to remove components until the end; an empty component
-                # will simply serve as the base distribution. This may lead to
-                # some extra computation due to checking what is essentially two
-                # base distributions. However, it's likely to be less overhead
-                # than actually removing and re-adding components.
 
                 # save posterior responsibility each component takes for
                 # explaining data instance i
