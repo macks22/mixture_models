@@ -248,46 +248,40 @@ class IGMM(GMM):
         self.alpha = alpha if alpha else float(K)
 
         # These are the parameters that will be fit.
-        self._comps = np.array([])
+        self.comps = {}
         self.z = np.array([])
 
-    @property
-    def comps(self):
-        return self._comps[~np.equal(self._comps, None)]
-
-    @comps.setter
-    def comps(self, comps):
-        self._comps = np.array(comps, dtype=object)
+    def _next_k(self):
+        """Return the label of the next empty component."""
+        labels = self.comps.keys()
+        for k, i in zip(labels, xrange(self.K)):
+            if i != k:
+                return i
+        return k + 1
 
     def add_component(self, comp):
         """Place the new component in an empty space in the components array and 
         increment K. We assume the assignments z has already been updated.
         """
-        # Update K and resize component array if necessary.
+        new_k = self._next_k()
+        self.comps[new_k] = comp
         self.K += 1
-        size = self._comps.shape[0]
-        if self.K > size:
-            self._comps.resize(size * 2)
-            self._comps[self.K - 1:] = None  # -1 because we just added 1
-
-        new_k = np.nonzero(np.equal(self._comps, None))[0][0]
-        self._comps[new_k] = comp
 
     def add_component_with_instance(self, X, i):
         """Add new component containing X[i]."""
-        new_k = np.nonzero(np.equal(self._comps, None))[0][0]
+        new_k = self._next_k()
         self.z[i] = new_k
-        self.add_component(GaussianComponent(X, self.z == new_k))
+        self.comps[new_k] = GaussianComponent(X, self.z == new_k)
+        self.K += 1
 
     def rm_component(self, k):
         """Remove component k from components being tracked."""
         try:
-            self.comps[k] = None
-        except IndexError:
-            raise IndexError(
-                'trying to remove component %d '
-                'but there are only %d components' % (k, self.K))
-        self.K -= 1
+            del self.comps[k]
+            self.K -= 1
+        except KeyError:
+            raise KeyError(
+                "trying to remove component %d but it's not being tracked" % k)
 
     def _init_comps(self, X, init_method='kmeans', iters=100):
         """Choose an initial assignment of instances to components using
@@ -295,23 +289,45 @@ class IGMM(GMM):
         parameters based on the assigned data instances.
         """
         n, f = X.shape  # number of instances, number of features
-        self.labels = np.arange(self.K)
-        self._comps = np.array([None] * (self.K * 2), dtype=object)
+        labels = np.arange(self.K)
 
         if init_method == 'kmeans':
-            centroids, self.z = spvq.kmeans2(X, self.K, minit='points', iter=iters)
-            self._comps[:self.K] = np.array([
-                GaussianComponent(X, self.z == k) for k in self.labels],
-                dtype=object)
+            centroids, self.z = \
+                spvq.kmeans2(X, self.K, minit='points', iter=iters)
+            self.comps = {
+                k: GaussianComponent(X, self.z == k) for k in labels}
 
         elif init_method == 'random':
             self.z = np.random.randint(0, self.K, n)
-            self._comps[:self.K] = np.array([
-                GaussianComponent(X, self.z == k) for k in self.labels],
-                dtype=object)
+            self.comps = {
+                k: GaussianComponent(X, self.z == k) for k in labels}
 
         elif init_method == 'load':
             pass
+
+    @property
+    def counts(self):
+        return np.array([comp.n for comp in self.comps.values()])
+
+    @property
+    def n(self):
+        return self.counts.sum()
+
+    @property
+    def nf(self):
+        if self.K >= 0:
+            return self.comps.values()[0].nf
+        else:
+            return 0
+
+    @property
+    def means(self):
+        return np.array([comp.mean for comp in self.comps.values()])
+
+    @property
+    def covs(self):
+        return np.array([comp.cov for comp in self.comps.values()])
+
 
     def fit(self, X, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
@@ -380,7 +396,8 @@ class IGMM(GMM):
                 weights = self.counts / denom
 
                 # Calculate P(X[i] | X[-i], pi, mu, sigma)
-                probs = np.array([comp.pp.pdf(x) for comp in self.comps])
+                probs = np.array([
+                    comp.pp.pdf(x) for comp in self.comps.values()])
 
                 # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
                 Pk[:self.K] = probs * weights
@@ -400,14 +417,17 @@ class IGMM(GMM):
 
                 # If new component was selected, add to tracked components.
                 if new_k == self.K:
-                    if comp.is_empty:
-                        # reuse old component.
+                    # reuse old component if it was removed.
+                    if old_comp.is_empty:
                         old_comp.add_instance(i)
-                        self.add_component(old_component)
+                        self.add_component(old_comp)
+                    else:
+                        self.add_component_with_instance(X, i)
 
                     # Resize Pk if necessary for new component
                     if self.K >= Pk.shape[0]:
                         Pk = np.resize(Pk, Pk.shape[0] * 2)
+
                 else:  # Old component selected, add data instance to it.
                     self.comps[new_k].add_instance(i)
                     self.z[i] = new_k
@@ -419,16 +439,27 @@ class IGMM(GMM):
 
             if logging_iter:
                 llik = self.llikelihood()
-                print('sample %d, log-likelihood: %.3f' % (iternum, llik))
+                print('sample %d, %d comps, log-likelihood: %.3f' % (
+                    iternum, self.K, llik))
 
                 if saving_sample:
                     pi[idx] = Pk[:next_k].copy()
-                    stats = [comp.posterior.rvs() for comp in self.comps]
+                    stats = \
+                        [comp.posterior.rvs() for comp in self.comps.values()]
                     mu[idx] = np.r_[[stat[0] for stat in stats]]
                     Sigma[idx] = np.r_[[stat[1] for stat in stats]]
                     ll[idx] = llik
 
         return ll, H_ik, pi, mu, Sigma
+
+    def llikelihood(self):
+        """Calculate ln(P(X, z | alpha, pi, mu, Sigma)), the marginal
+        log-likelihood of the data and the component instance assignments given
+        the parameters and hyper-parameters.
+        """
+        llik = self.label_llikelihood()
+        llik += np.sum([comp.llikelihood() for comp in self.comps.values()])
+        return llik
 
 
 if __name__ == "__main__":
