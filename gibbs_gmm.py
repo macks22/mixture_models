@@ -2,6 +2,9 @@
 Gibbs sampling for Finite Gaussian Mixture Model.
 
 """
+import logging
+import argparse
+
 import numpy as np
 import scipy as sp
 import scipy.stats as stats
@@ -10,6 +13,36 @@ import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
 from component import GaussianComponent
+
+
+class GMMTrace(object):
+    __slots__ = ['ll', 'pi', 'mu', 'Sigma', 'H_ik']
+
+    def __init__(self, nsamples, n, f, K):
+        """Initialize empty storage for n samples of each parameter.
+        Each parameter is stored in an ndarray with the first index being for
+        the sample number.
+
+        Args:
+            nsamples (int): Number of Gibbs samples to store for each parameter.
+            n (int): Number of data instances being learned on.
+            f (int): Number features the model is being learned on.
+            K (int): Number of clusters.
+
+        """
+        self.ll = np.zeros((nsamples,))        # log-likelihood at each step
+        self.pi = np.zeros((nsamples, K))      # mixture weights
+        self.mu = np.zeros((nsamples, K, f))   # component means
+        self.Sigma = np.zeros((nsamples, K, f, f))  # covariance matrices
+        self.H_ik = np.zeros((nsamples, n, K)) # posterior mixture memberships
+
+    def expectation(self):
+        return {
+            'H_ik': self.H_ik.mean(0),
+            'pi': self.pi.mean(0),
+            'mu': self.mu.mean(0),
+            'Sigma': self.Sigma.mean(0)
+        }
 
 
 class GMM(object):
@@ -60,6 +93,12 @@ class GMM(object):
     @property
     def covs(self):
         return np.array([comp.cov for comp in self])
+
+    def posterior_rvs(self):
+        stats = [comp.posterior.rvs() for comp in self]
+        mus = np.r_[[stat[0] for stat in stats]]
+        Sigmas = np.r_[[stat[1] for stat in stats]]
+        return mus, Sigmas
 
     def _init_comps(self, X, init_method='kmeans', iters=100):
         """Choose an initial assignment of instances to components using
@@ -138,13 +177,8 @@ class GMM(object):
         keeping = self.nsamples - self.burnin
         store = int(keeping / 2)
 
-        pi = np.zeros((store, K))  # mixture weights
-        H_ik = np.zeros((store, n, K))  # posterior mixture responsibilities
-        mu = np.zeros((store, K, f))  # component means
-        Sigma = np.zeros((store, K, f, f))  # component covariance matrices
-        ll = np.zeros(store)  # log-likelihood at each step
-
-        print('initial log-likelihood: %.3f' % self.llikelihood())
+        trace = GMMTrace(store, n, f, K)
+        logging.info('initial log-likelihood: %.3f' % self.llikelihood())
 
         # Run collapsed Gibbs sampling to fit the model.
         indices = np.arange(n)
@@ -184,20 +218,18 @@ class GMM(object):
                 # save posterior responsibility each component takes for
                 # explaining data instance i
                 if saving_sample:
-                    H_ik[idx, i] = Pk
+                    trace.H_ik[idx, i] = Pk
 
             if logging_iter:
                 llik = self.llikelihood()
-                print('sample %d, log-likelihood: %.3f' % (iternum, llik))
+                logging.info('sample %03d, log-likelihood: %.3f' % (iternum, llik))
 
                 if saving_sample:
-                    pi[idx] = Pk
-                    stats = [comp.posterior.rvs() for comp in self.comps]
-                    mu[idx] = np.r_[[stat[0] for stat in stats]]
-                    Sigma[idx] = np.r_[[stat[1] for stat in stats]]
-                    ll[idx] = llik
+                    trace.pi[idx] = Pk
+                    trace.mu[idx], trace.Sigma[idx] = self.posterior_rvs()
+                    trace.ll[idx] = llik
 
-        return ll, H_ik, pi, mu, Sigma
+        return trace
 
     def label_llikelihood(self):
         """Calculate ln(P(z | alpha)), the marginal log-likelihood of the
@@ -241,15 +273,59 @@ class GMM(object):
         return np.exp(self.llikelihood())
 
 
+def make_parser(description):
+    parser = argparse.ArgumentParser(
+        description=description)
+    parser.add_argument(
+        '-v', '--verbose',
+        type=int, default=1,
+        help='adjust verbosity of logging output')
+    parser.add_argument(
+        '-spc', '--samples-per-comp',
+        type=int, default=100,
+        help='number of data samples to generate from each component')
+    parser.add_argument(
+        '-im', '--init-method',
+        choices=('kmeans', 'random', 'load'), default='kmeans',
+        help='initialization method for gmm; defaults to kmeans')
+    parser.add_argument(
+        '-k', type=int, default=2,
+        help='initial guess for number of components')
+    parser.add_argument(
+        '-ns', '--nsamples',
+        type=int, default=100,
+        help='number of Gibbs samples to draw'
+             '; default 100')
+    parser.add_argument(
+        '-b', '--burnin',
+        type=int, default=10,
+        help='number of Gibbs samples to discard before storing the rest'
+             '; default 10')
+    parser.add_argument(
+        '-ts', '--thin-step',
+        type=int, default=2,
+        help='step-size for thinning; default is 2, which means every other '
+             'sample will be kept')
+    return parser
+
+
 if __name__ == "__main__":
     np.random.seed(1234)
     np.seterr('raise')
 
-    M = 200            # number of samples per component
-    K = 2              # initial guess for number of clusters
-    method = 'kmeans'  # parameter initialization method
+    parser = make_parser('Infer gmm model parameters for generated data.')
+    args = parser.parse_args()
+
+    # Setup logging.
+    logging.basicConfig(
+        level=(logging.DEBUG if args.verbose == 2 else
+               logging.INFO if args.verbose == 1 else
+               logging.ERROR),
+        format="[%(asctime)s]: %(message)s")
 
     # Generate two 2D Gaussians
+    M = args.samples_per_comp  # number of samples per component
+    K = args.k  # initial guess for number of clusters
     X = np.r_[
         stats.multivariate_normal.rvs([-5, -7], 2, M),
         stats.multivariate_normal.rvs([2, 4], 4, M)
@@ -258,13 +334,9 @@ if __name__ == "__main__":
 
     # Initialize and fit Gaussian Mixture Model.
     gmm = GMM()
-    ll, H_ik, pi, mu, Sigma = gmm.fit(
-        X, K, init_method=method, nsamples=100, burnin=10)
+    trace = gmm.fit(
+        X, K, init_method=args.init_method, nsamples=args.nsamples,
+        burnin=args.burnin, thin_step=args.thin_step)
 
     # Calculate expectations using Monte Carlo estimates.
-    E = {
-        'H_ik': H_ik.mean(0),
-        'pi': pi.mean(0),
-        'mu': mu.mean(0),
-        'Sigma': Sigma.mean(0)
-    }
+    E = trace.expectation()
