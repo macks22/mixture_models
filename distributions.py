@@ -167,7 +167,8 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
 class GIW(object):
     """Gaussian-Inverse Wishart distribution."""
-    __slots__ = ['mu', 'kappa', 'nu', 'Psi', '_cache']
+    __slots__ = ['mu', 'kappa', 'nu', 'Psi',
+                 '_Psi_logdet', '_cache', '_Psi_zeros']
 
     def __init__(self, mu, kappa, nu, Psi):
         self.mu = mu
@@ -175,14 +176,19 @@ class GIW(object):
         self.nu = nu
         self.Psi = Psi
         if nu < len(Psi):
-            raise ValueError('nu0 must be >= len(Psi0)')
+            raise ValueError('nu must be >= len(Psi)')
+
+        # Cache log determinant of Psi
+        L = sp.linalg.cholesky(Psi)
+        self._Psi_logdet = 2 * np.log(np.diag(L)).sum()
 
         # Terms for Psi update invariant to data.
         self._cache = Psi + kappa * mu[:, None].dot(mu[None, :])
+        self._Psi_zeros = np.zeros(Psi.shape)
 
     @property
     def d(self):
-        return len(self.Psi)
+        return self.Psi.shape[0]
 
     def rvs(self):
         cov = stats.invwishart.rvs(self.nu, self.Psi)
@@ -206,12 +212,39 @@ class GIW(object):
         kappa = self.kappa + n
         nu = self.nu + n
         mu = (self.kappa * self.mu + n * xbar) / kappa
-        Psi = self._cache + S - kappa * mu[:, None].dot(mu[None, :])
+        tmp = mu[:, None].dot(mu[None, :])
+        Psi = self._cache + S - kappa * tmp
+        Psi = np.maximum(self._Psi_zeros, Psi)
 
         return GIW(mu, kappa, nu, Psi) if obj is None else \
                GIW.__init__(obj, mu, kappa, nu, Psi)
 
     def mean(self):
         """Return expected value for mu, Sigma."""
-        Sigma = self.Psi / (self.nu - self.Psi.shape[0] - 1)
+        Sigma = self.Psi / (self.nu - self.d - 1)
         return self.mu, Sigma
+
+
+class AlphaGammaPrior(object):
+    """Gamma prior distribution for Dirichlet concentration parameter alpha."""
+
+    def __init__(self, alpha=1.0, n=1.0):
+        self.alpha = alpha
+        self.n = n
+        self.a = 1.0
+        self.b = 1.0
+
+    def draw(self, k):
+        """Draw alpha conditional on realizations of x and k."""
+        x = self._draw_x(k)
+        b_minus_logx = self.b - np.log(x)
+        pi_1 = self.a + k - 1
+        pi_2 = self.n * b_minus_logx
+
+        return (pi_1 * stats.gamma.pdf(pi_1 + 1, b_minus_logx) +
+                pi_2 * stats.gamma.pdf(pi_1, b_minus_logx))
+
+    def _draw_x(self, k):
+        """Draw x conditional on realizations of alpha and k."""
+        return stats.beta.rvs(self.a + 1, self.n)
+

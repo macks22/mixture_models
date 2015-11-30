@@ -263,8 +263,8 @@ class GaussianComponent(object):
         nu_post = self.posterior.nu * 0.5
 
         return (spsp.gammaln(nu_post) - spsp.gammaln(nu_prior)
-                + nu_prior * np.log(np.linalg.det(self.prior.Psi))
-                - nu_post * np.log(np.linalg.det(self.posterior.Psi))
+                + nu_prior * self.prior._Psi_logdet
+                - nu_post * self.posterior._Psi_logdet
                 + half_d * (np.log(self.prior.kappa) - np.log(self.posterior.kappa))
                 - (self.n * half_d) * np.log(np.pi))
 
