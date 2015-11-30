@@ -1,5 +1,5 @@
 """
-Individualized GMM + EM Implementation.
+Profiling GMM + EM Implementation.
 
 This is a Gaussian Mixture Model with per-entity membership weights. In other
 words, instead of K global membership weights, one per each of the K components,
@@ -9,13 +9,11 @@ to different extents by each of the componenets. So the shared components are
 combined in different ways to describe each entity.
 
 """
-import sys
 import logging
 import argparse
 
 import numpy as np
 import scipy as sp
-import pandas as pd
 import scipy.cluster.vq as vq
 from scipy import stats
 
