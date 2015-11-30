@@ -259,26 +259,32 @@ class IGMM(GMM):
                 return i
         return k + 1
 
+    def _add_component(self, comp, new_k):
+        self.comps[new_k] = comp
+        self.K += 1
+        self.labels = self.comps.keys()
+
     def add_component(self, comp):
         """Place the new component in an empty space in the components array and 
         increment K. We assume the assignments z has already been updated.
         """
         new_k = self._next_k()
-        self.comps[new_k] = comp
-        self.K += 1
+        self._add_component(comp, new_k)
+        return new_k
 
     def add_component_with_instance(self, X, i):
         """Add new component containing X[i]."""
         new_k = self._next_k()
         self.z[i] = new_k
-        self.comps[new_k] = GaussianComponent(X, self.z == new_k)
-        self.K += 1
+        self._add_component(GaussianComponent(X, self.z == new_k), new_k)
+        return new_k
 
     def rm_component(self, k):
         """Remove component k from components being tracked."""
         try:
             del self.comps[k]
             self.K -= 1
+            self.labels = self.comps.keys()
         except KeyError:
             raise KeyError(
                 "trying to remove component %d but it's not being tracked" % k)
@@ -289,18 +295,18 @@ class IGMM(GMM):
         parameters based on the assigned data instances.
         """
         n, f = X.shape  # number of instances, number of features
-        labels = np.arange(self.K)
+        self.labels = np.arange(self.K)
 
         if init_method == 'kmeans':
             centroids, self.z = \
                 spvq.kmeans2(X, self.K, minit='points', iter=iters)
             self.comps = {
-                k: GaussianComponent(X, self.z == k) for k in labels}
+                k: GaussianComponent(X, self.z == k) for k in self.labels}
 
         elif init_method == 'random':
             self.z = np.random.randint(0, self.K, n)
             self.comps = {
-                k: GaussianComponent(X, self.z == k) for k in labels}
+                k: GaussianComponent(X, self.z == k) for k in self.labels}
 
         elif init_method == 'load':
             pass
@@ -327,7 +333,6 @@ class IGMM(GMM):
     @property
     def covs(self):
         return np.array([comp.cov for comp in self.comps.values()])
-
 
     def fit(self, X, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
@@ -413,14 +418,15 @@ class IGMM(GMM):
                 Pk[:next_k] = Pk[:next_k] / Pk[:next_k].sum()
 
                 # Sample new component for X[i] using normalized probs.
-                new_k = np.nonzero(np.random.multinomial(1, Pk[:next_k]))[0][0]
+                _new_k = np.nonzero(np.random.multinomial(1, Pk[:next_k]))[0][0]
 
                 # If new component was selected, add to tracked components.
-                if new_k == self.K:
+                if _new_k == self.K:
                     # reuse old component if it was removed.
                     if old_comp.is_empty:
                         old_comp.add_instance(i)
-                        self.add_component(old_comp)
+                        new_k = self.add_component(old_comp)
+                        self.z[i] = new_k
                     else:
                         self.add_component_with_instance(X, i)
 
@@ -429,6 +435,7 @@ class IGMM(GMM):
                         Pk = np.resize(Pk, Pk.shape[0] * 2)
 
                 else:  # Old component selected, add data instance to it.
+                    new_k = self.labels[_new_k]  # non-contiguous labels
                     self.comps[new_k].add_instance(i)
                     self.z[i] = new_k
 
@@ -449,6 +456,9 @@ class IGMM(GMM):
                     mu[idx] = np.r_[[stat[0] for stat in stats]]
                     Sigma[idx] = np.r_[[stat[1] for stat in stats]]
                     ll[idx] = llik
+
+        print('sample %d, %d comps, log-likelihood: %.3f' % (
+            iternum, self.K, llik))
 
         return ll, H_ik, pi, mu, Sigma
 
@@ -473,7 +483,7 @@ if __name__ == "__main__":
     # Generate two 2D Gaussians
     X = np.r_[
         stats.multivariate_normal.rvs([-5, -7], 2, M),
-        stats.multivariate_normal.rvs([5, 7], 4, M)
+        stats.multivariate_normal.rvs([2, 4], 4, M)
     ]
     true_z = np.concatenate([[k] * M for k in range(K)])
 
