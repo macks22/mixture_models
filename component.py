@@ -9,9 +9,10 @@ import scipy.special as spsp
 import matplotlib.pyplot as plt
 
 from distributions import multivariate_t, GIW
+from mixture import MixtureComponent, MixtureComponentCache
 
 
-class GaussianComponentCache(object):
+class GaussianComponentCache(MixtureComponentCache):
     slots = ['xbar', 'ssq', 'mu', 'kappa', 'nu', 'Psi', 'ppc', 'ppdf']
 
     def __init__(self, f):
@@ -28,35 +29,34 @@ class GaussianComponentCache(object):
         self.ppc = np.zeros((f, f))
         self.ppdf = 0
 
-    def store(self, xbar, ssq, mu, kappa, nu, Psi, ppc, ppdf):
+    def store(self, comp):
         """Store stats as instance variables."""
-        self.xbar[:] = xbar
-        self.ssq[:] = ssq
+        self.xbar[:] = comp._xbar
+        self.ssq[:] = comp._ssq
 
-        self.mu[:] = mu
-        self.kappa = kappa
-        self.nu = nu
-        self.Psi[:] = Psi
+        self.mu[:] = comp.posterior.mu
+        self.kappa = comp.posterior.kappa
+        self.nu = comp.posterior.nu
+        self.Psi[:] = comp.posterior.Psi
 
-        self.ppc[:] = ppc
-        self.ppdf = ppdf
+        self.ppc[:] = comp.pp.cov
+        self.ppdf = comp.pp.df
 
     def restore(self, comp):
         """Restore cached stats to component instance variables."""
         comp._xbar[:] = self.xbar
         comp._ssq[:] = self.ssq
 
-        comp.posterior.mu[:] = self.mu
-        comp.posterior.kappa = self.kappa
-        comp.posterior.nu = self.nu
-        comp.posterior.Psi[:] = self.Psi
+        GIW.__init__(comp.posterior, self.mu, self.kappa, self.nu, self.Psi)
 
         comp.pp.cov[:] = self.ppc
         comp.pp.df = self.ppdf
 
 
-class GaussianComponent(object):
+class GaussianComponent(MixtureComponent):
     """Multivariate Gaussian distribution; for use as mixture component."""
+
+    cache_class = GaussianComponentCache
 
     def __init__(self, X, instances, prior=None):
         """Assign some subset `instances` of the data `X` to this component.
@@ -84,34 +84,11 @@ class GaussianComponent(object):
             instances (np.ndarray): Boolean mask to select which rows of the
                 data matrix X belong to this component.
         """
-        self._instances = instances
-        self.X = X
+        MixtureComponent.__init__(self, X, instances, prior)
 
-        self.prior = prior
-        if self.prior is None:
-
-            # Init mu ~ Normal hyperparams.
-            # mu = self.X.mean(0) if self.n else np.zeros(self.nf)
-            mu = np.zeros(self.nf)
-            kappa = 1.0
-
-            # Init Sigma ~ Inv-Wishart hyperparams.
-            nu = self.nf + 2
-            Psi = np.eye(self.nf) * nu
-
-            self.prior = GIW(mu, kappa, nu, Psi)
-
-        # These are set during fitting.
-        self.posterior = self.prior.copy()
-        self.pp = multivariate_t(mu, Psi, nu)  # placeholder values
-
-        # When adding/removing instances from the components during fitting,
-        # the same instance will often be added back immediately. We look for
-        # case and avoid recomputing the sufficient stats, posterior, and
-        # posterior predictive. Initially the cache is empty. We cache before
-        # removing an instance.
-        self._cache = GaussianComponentCache(self.nf)
-        self._last_i_removed = -1
+        # This is set during fitting.
+        self.pp = multivariate_t(
+            self.prior.mu, self.prior.Psi, self.prior.nu)  # placeholder values
 
         # The precision matrix is the inverse of the covariance.
         # Whenever it is asked for, we'll need to get the inverse of
@@ -122,33 +99,18 @@ class GaussianComponent(object):
         # Fit params to the data.
         self.fit()
 
-    @property
-    def X(self):
-        return self._X[self._instances]
+    def default_prior(self):
+        """Return default prior distribution."""
+        # Init mu ~ Normal hyperparams.
+        # mu = self.X.mean(0) if self.n else np.zeros(self.nf)
+        mu = np.zeros(self.nf)
+        kappa = 1.0
 
-    @X.setter
-    def X(self, X):
-        self._X = X
+        # Init Sigma ~ Inv-Wishart hyperparams.
+        nu = self.nf + 2
+        Psi = np.eye(self.nf) * nu
 
-        # Cache stats used during fitting.
-        n = self.n
-        self._xbar = self.X.mean(0) if n else np.zeros(self.nf) # sample mean
-        self._ssq = self.X.T.dot(self.X) # sample sum of squares
-
-    @property
-    def n(self):
-        """Number of instances assigned to this component."""
-        return self.X.shape[0]
-
-    @property
-    def nf(self):
-        """Number of features."""
-        return self.X.shape[1]
-
-    @property
-    def is_empty(self):
-        """True if there are 0 instances assigned to this component."""
-        return self.n == 0
+        return GIW(mu, kappa, nu, Psi)
 
     @property
     def precision(self):
@@ -167,26 +129,14 @@ class GaussianComponent(object):
     def cov(self):
         return self.prior.Psi / (self.prior.nu - self.prior.Psi.shape[0] - 1)
 
-    def sufficient_stats(self):
-        """Return sample size, mean, and sum of squares."""
-        return self.n, self._xbar, self._ssq
+    def _populate_cache(self):
+        """Cache stats used during fitting."""
+        self._xbar = self.X.mean(0) if self.n \
+                else np.zeros(self.nf) # sample mean
+        self._ssq = self.X.T.dot(self.X) # sample sum of squares
 
-    def _cache_stats(self):
-        self._cache.store(
-            self._xbar, self._ssq, self.posterior.mu, self.posterior.kappa,
-            self.posterior.nu, self.posterior.Psi, self.pp.cov, self.pp.df)
-
-    def _restore_from_cache(self):
-        self._cache.restore(self)
-
-    def rm_instance(self, i):
-        if not self._instances[i]:
-            raise IndexError('index %i not currently in component' % i)
-
-        self._cache_stats()
-        self._last_i_removed = i
-
-        # Remove sufficient stats from sample mean & sum of squares.
+    def _cache_rm_instance(self, i):
+        """Remove sufficient stats from sample mean & sum of squares."""
         x = self._X[i]
         self._ssq -= x[:, None].dot(x[None, :])
         new_n = self.n - 1
@@ -195,45 +145,20 @@ class GaussianComponent(object):
         else:
             self._xbar = (self._xbar * self.n - x) / new_n
 
-        self._instances[i] = False  # remove instance
-        self.fit()  # handles empty component case
+    def _cache_add_instance(self, i):
+        """Add sufficient stats from this instance to cached stats."""
+        x = self._X[i]
+        self._ssq += x[:, None].dot(x[None, :])
+        self._xbar = (self._xbar * self.n + x) / (self.n + 1)
 
-    def add_instance(self, i):
-        """Add an instance to this Gaussian component.
-        This is done by setting element i of the `instances` mask to True.
+    def sufficient_stats(self):
+        """Return sample size, mean, and sum of squares."""
+        return self.n, self._xbar, self._ssq
+
+    def fit_pp(self):
+        """Posterior predictive parameter calculations.
+        Eq. (15) from Kamper's guide.
         """
-        if self._instances[i]:  # already in component
-            return
-
-        if self._last_i_removed == i:
-            self._restore_from_cache()
-        else:
-            # Add sufficient stats to the cached stats.
-            x = self._X[i]
-            self._ssq += x[:, None].dot(x[None, :])
-            self._xbar = (self._xbar * self.n + x) / (self.n + 1)
-            self.fit()
-
-        self._instances[i] = True
-
-    def fit_posterior(self):
-        """Update posterior using conjugate hyper-parameter updates based on
-        observations X.
-        """
-        self.prior.conjugate_updates(
-            self.n, self._xbar, self._ssq, self.posterior)
-
-    def fit(self):
-        """Perform conjugate updates of the GIW prior parameters to compute the
-        posterior mean and convaraince. We also compute the posterior predictive
-        mean and covariance for use in the students-t posterior predictive pdf.
-
-        Eqs. (8) and (15) in Kamper's guide.
-        """
-        self.fit_posterior()
-
-        # Posterior predictive parameter calculations.
-        # Eq. (15) from Kamper's guide.
         self.pp.mean = self.posterior.mu
         self.pp.df = self.posterior.nu - self.nf + 1
         pp_cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
@@ -268,10 +193,160 @@ class GaussianComponent(object):
                 + half_d * (np.log(self.prior.kappa) - np.log(self.posterior.kappa))
                 - (self.n * half_d) * np.log(np.pi))
 
-    def likelihood(self):
-        """Compute marginal likelihood of data given the observed
+
+class MGLRComponentCache(MixtureComponentCache):
+    slots = ['x_ssq', 'y_ssq', 'xy', 'mu', 'V', 'a', 'b', 'ppm', 'ppc', 'ppdf']
+
+    def __init__(self, f):
+        """Allocate space for cache variables based on number of features f."""
+        self.x_ssq = np.zeros((f, f))
+        self.y_ssq = np.zeros((f,))
+        self.xy = np.zeros((f,))
+
+        self.mu = np.zeros(f)
+        self.V = np.zeros((f, f))
+        self.a = 0
+        self.b = 0
+
+        self.ppm = np.zeros((f,))
+        self.ppc = np.zeros((f, f))
+        self.ppdf = 0
+
+    def store(self, comp):
+        """Store stats as instance variables."""
+        self.x_ssq[:] = comp._x_ssq
+        self.y_ssq[:] = comp._y_ssq
+        self.xy[:] = comp._xy
+
+        self.mu[:] = comp.posterior.mu
+        self.V[:] = comp.posterior.V
+        self.a = comp.posterior.a
+        self.b = comp.posterior.b
+
+        self.ppm[:] = comp.pp.mean
+        self.ppc[:] = comp.pp.cov
+        self.ppdf = comp.pp.df
+
+    def restore(self, comp):
+        """Restore cached stats to component instance variables."""
+        comp._x_ssq[:] = self.x_ssq
+        comp._y_ssq[:] = self.y_ssq
+        comp._xy[:] = self.xy
+
+        GIG.__init__(comp.posterior, self.mu, self.V, self.a, self.b)
+
+        comp.pp.mean[:] = self.ppm
+        comp.pp.cov[:] = self.ppc
+        comp.pp.df = self.ppdf
+
+
+class MGLRComponent(MixtureComponentCache):
+    """Mixture of Gaussian Linear Regressions with conjugate GIG prior."""
+
+    cache_class = MGLRComponentCache
+
+    def __init__(self, X, y, instances, prior=None):
+        """Assign a subset `instances` of the data `X`, `y` to this component.
+        We use a boolean mask on the instances for efficient add/remove. This is
+        important for the collapsed Gibbs sampling procedures, which are
+        removing/adding instances from components during each sampling
+        iteration.
+
+        This class models a multivariate Gaussian with a conjugate
+        Gaussian-Inverse-Gamma (GIG) prior. Hence we have hyper-parameters:
+
+            mu: prior mean on mu
+            V:  prior scale matrix (multiplies by sigma)
+
+            a: prior shape
+            b: prior rate
+
+        These hyper-parameters are intialized according to `default_prior`.
+
+        Args:
+            X (np.ndarray): The matrix of data, where rows are data instances.
+            y (np.ndarray): Observations corresponding to X.
+            instances (np.ndarray): Boolean mask to select which rows of the
+                data matrix X belong to this component.
+            prior (GIG): Optional prior distribution; defaults to
+                `default_prior`.
+        """
+        self._y = y
+        MixtureComponent.__init__(self, X, instances, prior)
+
+        # This is set during fitting.
+        self.pp = multivariate_t(
+            self.prior.mu, self.prior.Psi, self.prior.nu)  # placeholder values
+
+        # Fit params to the data.
+        self.fit()
+
+    @property
+    def y(self):
+        return self._y[self._instances]
+
+    @property
+    def y(self, y):
+        self._y = y
+        self._populate_cache()
+
+    def default_prior(self):
+        """Return default prior distribution."""
+        f = self.nf
+        mu = np.zeros((f,))
+        V = np.ones((f, f))
+        return GIW(mu, V, 1.0, 1.0)
+
+    def _populate_cache(self):
+        """Cache stats used during fitting."""
+        self._x_ssq = self.X.T.dot(self.X)  # sample X sum of squares
+        self._y_ssq = self.y.dot(self.y)    # sample y sum of squares
+        self._xy = self.X.T.dot(self.y)  # matrix multiplication of X^T y
+
+    def _cache_rm_instance(self, i):
+        """Remove sufficient stats from sample mean & sum of squares."""
+        x = self._X[i]
+        y = self._y[i]
+        new_n = self.n - 1
+        if new_n == 0:
+            self._x_ssq[:] = 0
+            self._y_ssq = 0
+            self._xy[:] = 0
+        else:
+            self._x_ssq -= x[:, None].dot(x[None, :])
+            self._y_ssq -= (y ** 2)
+            self._xy -= x.dot(y)
+
+    def _cache_add_instance(self, i):
+        """Add sufficient stats from this instance to cached stats."""
+        x = self._X[i]
+        y = self._y[i]
+        self._x_ssq += x[:, None].dot(x[None, :])
+        self._y_ssq += (y ** 2)
+        self._xy += x.dot(y)
+
+    def sufficient_stats(self):
+        """Return sample size, mean, and sum of squares."""
+        return self.n, self._x_ssq, self._y_ssq, self._xy
+
+    def fit_pp(self, X):
+        """Posterior predictive parameter calculations.
+        Eq. (20) from Banerjee's BLM: Gory Details.
+        """
+        self.pp.mean = X.dot(self.posterior.mu)  # n x 1
+        self.pp.df = self.posterior.a * 2
+        pp_cov = ((self.posterior.a / self.posterior.b)
+                  * np.eye(self.nf) + X.dot(self.posterior.V).dot(X.T)) # n x n
+
+    def fit(self):
+        self.fit_posterior()
+
+    def pdf(self, X):
+        """Multivariate normal probability density function."""
+        return 0.0
+
+    def llikelihood(self):
+        """Compute marginal log likelihood of data given the observed
         data instances assigned to this component.
         """
-        return np.exp(self.llikelihood())
-
-
+        return 1.0
