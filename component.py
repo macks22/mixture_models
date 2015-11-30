@@ -91,7 +91,8 @@ class GaussianComponent(object):
         if self.prior is None:
 
             # Init mu ~ Normal hyperparams.
-            mu = self.X.mean(0) if self.n else np.zeros(self.nf)
+            # mu = self.X.mean(0) if self.n else np.zeros(self.nf)
+            mu = np.zeros(self.nf)
             kappa = 1.0
 
             # Init Sigma ~ Inv-Wishart hyperparams.
@@ -170,13 +171,6 @@ class GaussianComponent(object):
         """Return sample size, mean, and sum of squares."""
         return self.n, self._xbar, self._ssq
 
-    def fit_posterior(self):
-        """Update posterior using conjugate hyper-parameter updates based on
-        observations X.
-        """
-        self.prior.conjugate_updates(
-            self.n, self._xbar, self._ssq, self.posterior)
-
     def _cache_stats(self):
         self._cache.store(
             self._xbar, self._ssq, self.posterior.mu, self.posterior.kappa,
@@ -222,6 +216,13 @@ class GaussianComponent(object):
 
         self._instances[i] = True
 
+    def fit_posterior(self):
+        """Update posterior using conjugate hyper-parameter updates based on
+        observations X.
+        """
+        self.prior.conjugate_updates(
+            self.n, self._xbar, self._ssq, self.posterior)
+
     def fit(self):
         """Perform conjugate updates of the GIW prior parameters to compute the
         posterior mean and convaraince. We also compute the posterior predictive
@@ -235,8 +236,17 @@ class GaussianComponent(object):
         # Eq. (15) from Kamper's guide.
         self.pp.mean = self.posterior.mu
         self.pp.df = self.posterior.nu - self.nf + 1
-        self.pp.cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
-                       / (self.posterior.kappa * self.pp.df))
+        pp_cov = ((self.posterior.Psi * (self.posterior.kappa + 1))
+                   / (self.posterior.kappa * self.pp.df))
+        try:
+            self.pp.cov = pp_cov
+        except sp.linalg.LinAlgError:
+            # attempt to resolve positive semi-definite issues by setting
+            # non-pd minors to machine epsilon.
+            evals, evecs = np.linalg.eigh(pp_cov)
+            evals[evals <= 0] = np.finfo(np.float32).eps
+            pp_cov = evecs.dot(np.diag(evals)).dot(evecs.T)
+            self.pp.cov = pp_cov
 
     def pdf(self, x):
         """Multivariate normal probability density function."""

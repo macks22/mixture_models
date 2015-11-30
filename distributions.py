@@ -116,13 +116,14 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
     @cov.setter
     def cov(self, cov):
-        if self.mean.shape[0] != cov.shape[0]:
+        f = cov.shape[0]
+        if self.mean.shape[0] != f:
             raise ValueError(
                 'incompatible shape: mean.shape[0] != cov.shape[0] '
-                '(%d != %d)' % (self.mean.shape[0], mean.shape[0]))
+                '(%d != %d)' % (self.mean.shape[0], f))
 
-        if not (cov.T == cov).all():
-            raise ValueError('cov matrix must be symmetric')
+        # if not (cov.T == cov).all():
+        #     raise ValueError('cov matrix must be symmetric')
 
         self._cov = cov
         self._cholesky = sp.linalg.cholesky(cov)
@@ -196,9 +197,9 @@ class GIW(object):
         statistics.
 
         Args:
+            n (int): Number of samples observed (rows in X).
             xbar (np.ndarray): 1 x d sample mean from data matrix X.
             S (np.ndarray): d x d sample sum of squares from X.
-            n (int): Number of samples observed (rows in X).
             obj (GIW): Update the instance variables of this object to be the
                 posteriors resulting from the conjugate updates.
         """
