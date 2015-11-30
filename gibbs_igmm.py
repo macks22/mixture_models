@@ -130,6 +130,7 @@ class IGMM(GMM):
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
         store = int(keeping / 2)
+
         alphas = np.ndarray(store, float)  # concentration parameter
         pi = np.ndarray(store, object)     # mixture weights
         H_ik = np.ndarray((store, n), object)  # posterior mixture responsibilities
@@ -213,7 +214,7 @@ class IGMM(GMM):
                 # save posterior responsibility each component takes for
                 # explaining data instance i
                 if saving_sample:
-                    H_ik[idx, i] = Pk
+                    H_ik[idx, i] = dict(zip(self.labels, Pk[:next_k]))
 
             if logging_iter:
                 llik = self.llikelihood()
@@ -222,11 +223,11 @@ class IGMM(GMM):
 
                 if saving_sample:
                     alphas[idx] = alpha
-                    pi[idx] = Pk[:next_k].copy()
+                    pi[idx] = dict(zip(self.labels, Pk[:next_k]))
                     stats = \
                         [comp.posterior.rvs() for comp in self.comps.values()]
-                    mu[idx] = np.r_[[stat[0] for stat in stats]]
-                    Sigma[idx] = np.r_[[stat[1] for stat in stats]]
+                    mu[idx] = dict(zip(self.labels, np.r_[[stat[0] for stat in stats]]))
+                    Sigma[idx] = dict(zip(self.labels, np.r_[[stat[1] for stat in stats]]))
                     ll[idx] = llik
 
         print('sample %d, %d comps, log-likelihood: %.3f' % (
@@ -263,3 +264,29 @@ if __name__ == "__main__":
     igmm = IGMM()
     ll, alphas, H_ik, pi, mu, Sigma = igmm.fit(
         X, K, alpha=1.0, init_method=method, nsamples=100, burnin=10)
+
+    # Calculate expectations
+    nsamples = len(ll)
+    n, nf = X.shape
+    labels = set(key for d in mu for key in d.keys())
+    max_k = len(labels)
+    lmap = dict(zip(np.arange(max_k), labels))
+
+    E = {
+        'H_ik':  np.ndarray((n, max_k)),
+        'pi':    np.ndarray((max_k,)),
+        'mu':    np.ndarray((max_k, nf)),
+        'Sigma': np.ndarray((max_k, nf, nf))
+    }
+
+    indices = np.arange(nsamples)
+    mu_zeros = np.zeros(nf)
+    Sigma_zeros = np.zeros((nf, nf))
+    for i, k in lmap.items():
+        E['pi'][i] = sum(pi[idx].get(k, 0.0) for idx in indices) / nsamples
+        E['mu'][i] = sum(mu[idx].get(k, mu_zeros) for idx in indices) / nsamples
+        E['Sigma'][i] = sum(Sigma[idx].get(k, Sigma_zeros) for idx in indices) / nsamples
+
+        for _i in range(n):
+            E['H_ik'][_i, i] = sum(H_ik[idx, _i].get(k, 0.0) for idx in indices) / nsamples
+

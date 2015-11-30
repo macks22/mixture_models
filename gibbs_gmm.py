@@ -137,6 +137,7 @@ class GMM(object):
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
         store = int(keeping / 2)
+
         pi = np.zeros((store, K))  # mixture weights
         H_ik = np.zeros((store, n, K))  # posterior mixture responsibilities
         mu = np.zeros((store, K, f))  # component means
