@@ -12,6 +12,8 @@ import scipy.special as spsp
 import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
+from cli import parse_args
+from mixture import MixtureModel
 from component import GaussianComponent
 
 
@@ -45,46 +47,14 @@ class GMMTrace(object):
         }
 
 
-class GMM(object):
+class GMM(MixtureModel):
     """Finite Gaussian Mixture Model."""
-
-    """Initialization methods supported & not yet implemented."""
-    _supported = ('kmeans', 'random', 'load')
-    _not_implemented = ('load',)
-
-    @classmethod
-    def supported_init_method(cls, init_method):
-        return init_method in cls._supported
-
-    @classmethod
-    def implemented_init_method(cls, init_method):
-        return init_method not in cls._not_implemented
 
     def __init__(self):
         """Initialize top-level parameters for Gaussian Mixture Model."""
         # These are the parameters that will be fit.
         self.comps = []
         self.z = []
-
-    def __iter__(self):
-        return (comp for comp in self.comps)
-
-    @property
-    def counts(self):
-        return np.array([comp.n for comp in self])
-
-    @property
-    def n(self):
-        return self.counts.sum()
-
-    @property
-    def nf(self):
-        compiter = iter(self)
-        try:
-            comp = compiter.next()
-            return comp.nf
-        except StopIteration:
-            return 0
 
     @property
     def means(self):
@@ -99,6 +69,21 @@ class GMM(object):
         mus = np.r_[[stat[0] for stat in stats]]
         Sigmas = np.r_[[stat[1] for stat in stats]]
         return mus, Sigmas
+
+    def init_comps(self, X, init_method='kmeans', iters=100):
+        """Initialize mixture components.
+
+        Args:
+            X (np.ndarray): Data matrix with instances as rows.
+            init_method (str): Method to use for initialization. One of:
+                'kmeans': initialize using k-means clustering with K clusters.
+                'random': randomly assign instances to components.
+                'load':   load parameters from previously learned model.
+            iters (int): Number of iterations to use for k-means
+                initialization if init_method is 'kmeans'.
+        """
+        self.validate_init_method(init_method)
+        return self._init_comps(X, init_method, iters)
 
     def _init_comps(self, X, init_method='kmeans', iters=100):
         """Choose an initial assignment of instances to components using
@@ -116,29 +101,6 @@ class GMM(object):
             self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
         elif init_method == 'load':
             pass
-
-    def init_comps(self, X, init_method='kmeans', iters=100):
-        """Initialize mixture components.
-
-        Args:
-            X (np.ndarray): Data matrix with instances as rows.
-            init_method (str): Method to use for initialization. One of:
-                'kmeans': initialize using k-means clustering with K clusters.
-                'random': randomly assign instances to components.
-                'load':   load parameters from previously learned model.
-            iters (int): Number of iterations to use for k-means
-                initialization if init_method is 'kmeans'.
-        """
-        if init_method not in self._supported:
-            raise ValueError(
-                '%s is not a supported init method; must be one of: %s' % (
-                    init_method, ', '.join(supported)))
-
-        if init_method in self._not_implemented:
-            raise NotImplemented(
-                '%s initialization not yet implemented' % init_method)
-
-        return self._init_comps(X, init_method, iters)
 
     def fit(self, X, K, alpha=0.0, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
@@ -245,12 +207,6 @@ class GMM(object):
         llik += (spsp.gammaln(counts) - spsp.gammaln(alpha_k)).sum()
         return llik
 
-    def label_likelihood(self):
-        """Calculate P(z | alpha), the marginal likelihood of the component
-        instance assignments.
-        """
-        return np.exp(self.label_llikelihood())
-
     def llikelihood(self):
         """Calculate ln(P(X, z | alpha, pi, mu, Sigma)), the marginal
         log-likelihood of the data and the component instance assignments given
@@ -264,68 +220,6 @@ class GMM(object):
         llik = self.label_llikelihood()
         llik += np.sum([comp.llikelihood() for comp in self])
         return llik
-
-    def likelihood(self):
-        """Calculate P(X, z | alpha, pi, mu, Sigma), the marginal likelihood
-        of the data and the component instance assignments given the parameters
-        and hyper-parameters.
-        """
-        return np.exp(self.llikelihood())
-
-
-def data_gen_parser(parser):
-    parser.add_argument(
-        '-spc', '--samples-per-comp',
-        type=int, default=100,
-        help='number of data samples to generate from each component')
-
-
-def make_parser(description):
-    parser = argparse.ArgumentParser(
-        description=description)
-    data_gen_parser(parser)  # add synthetic data generation arguments
-
-    parser.add_argument(
-        '-v', '--verbose',
-        type=int, default=1,
-        help='adjust verbosity of logging output')
-    parser.add_argument(
-        '-im', '--init-method',
-        choices=('kmeans', 'random', 'load'), default='kmeans',
-        help='initialization method for gmm; defaults to kmeans')
-    parser.add_argument(
-        '-K', type=int, default=2,
-        help='initial guess for number of components')
-    parser.add_argument(
-        '-ns', '--nsamples',
-        type=int, default=100,
-        help='number of Gibbs samples to draw'
-             '; default 100')
-    parser.add_argument(
-        '-b', '--burnin',
-        type=int, default=10,
-        help='number of Gibbs samples to discard before storing the rest'
-             '; default 10')
-    parser.add_argument(
-        '-ts', '--thin-step',
-        type=int, default=2,
-        help='step-size for thinning; default is 2, which means every other '
-             'sample will be kept')
-    return parser
-
-
-def parse_args(description):
-    parser = make_parser(description)
-    args = parser.parse_args()
-
-    # Setup logging.
-    logging.basicConfig(
-        level=(logging.DEBUG if args.verbose == 2 else
-               logging.INFO if args.verbose == 1 else
-               logging.ERROR),
-        format="[%(asctime)s]: %(message)s")
-
-    return args
 
 
 if __name__ == "__main__":
