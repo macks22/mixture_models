@@ -21,7 +21,7 @@ class GMMTrace(object):
     __slots__ = ['ll', 'pi', 'mu', 'Sigma', 'H_ik']
 
     def __init__(self, nsamples, n, f, K):
-        """Initialize empty storage for n samples of each parameter.
+        """Initialize empty storage for Gibbs samples of each parameter.
         Each parameter is stored in an ndarray with the first index being for
         the sample number.
 

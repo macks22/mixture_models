@@ -170,7 +170,7 @@ class IGMM(gibbs_gmm.GMM):
         self.init_comps(X, init_method, iters)
 
         n, f = X.shape
-        self.alpha_prior = AlphaGammaPrior(n, alpha if alpha else float(K))
+        self.alpha_prior = AlphaGammaPrior(alpha if alpha else float(K))
 
         self.nsamples = nsamples
         self.burnin = burnin
