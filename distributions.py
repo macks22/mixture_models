@@ -248,3 +248,12 @@ class AlphaGammaPrior(object):
         """Draw x conditional on realizations of alpha and k."""
         return stats.beta.rvs(self.a + 1, self.n)
 
+    @staticmethod
+    def expected_k(alpha, n):
+        """Approximate expected k based on West's "Hyperparameter estimation in
+        Dirichlet process mixture models."
+        """
+        alpha = np.array(alpha)
+        eulers_constant = -spsp.digamma(1)
+        rate = alpha * (eulers_constant + np.log(n))
+        return (1 + rate).sum() / alpha.shape[0]
