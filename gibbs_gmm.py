@@ -175,7 +175,7 @@ class GMM(object):
 
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
-        store = int(keeping / 2)
+        store = int(keeping / self.thin_step)
 
         trace = GMMTrace(store, n, f, K)
         logging.info('initial log-likelihood: %.3f' % self.llikelihood())
@@ -273,23 +273,28 @@ class GMM(object):
         return np.exp(self.llikelihood())
 
 
+def data_gen_parser(parser):
+    parser.add_argument(
+        '-spc', '--samples-per-comp',
+        type=int, default=100,
+        help='number of data samples to generate from each component')
+
+
 def make_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
+    data_gen_parser(parser)  # add synthetic data generation arguments
+
     parser.add_argument(
         '-v', '--verbose',
         type=int, default=1,
         help='adjust verbosity of logging output')
     parser.add_argument(
-        '-spc', '--samples-per-comp',
-        type=int, default=100,
-        help='number of data samples to generate from each component')
-    parser.add_argument(
         '-im', '--init-method',
         choices=('kmeans', 'random', 'load'), default='kmeans',
         help='initialization method for gmm; defaults to kmeans')
     parser.add_argument(
-        '-k', type=int, default=2,
+        '-K', type=int, default=2,
         help='initial guess for number of components')
     parser.add_argument(
         '-ns', '--nsamples',
@@ -309,11 +314,8 @@ def make_parser(description):
     return parser
 
 
-if __name__ == "__main__":
-    np.random.seed(1234)
-    np.seterr('raise')
-
-    parser = make_parser('Infer gmm model parameters for generated data.')
+def parse_args(description):
+    parser = make_parser(description)
     args = parser.parse_args()
 
     # Setup logging.
@@ -323,9 +325,18 @@ if __name__ == "__main__":
                logging.ERROR),
         format="[%(asctime)s]: %(message)s")
 
+    return args
+
+
+if __name__ == "__main__":
+    np.random.seed(1234)
+    np.seterr('raise')
+
+    args = parse_args('Infer gmm model parameters for generated data.')
+
     # Generate two 2D Gaussians
     M = args.samples_per_comp  # number of samples per component
-    K = args.k  # initial guess for number of clusters
+    K = args.K  # initial guess for number of clusters
     X = np.r_[
         stats.multivariate_normal.rvs([-5, -7], 2, M),
         stats.multivariate_normal.rvs([2, 4], 4, M)
