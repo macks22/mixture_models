@@ -290,6 +290,16 @@ class MGLRComponent(MixtureComponentCache):
         self._y = y
         self._populate_cache()
 
+    @property
+    def sigma(self):
+        return self.posterior.a / self.posterior.b
+
+    def mean(self, X):
+        return X.dot(self.posterior.mu)
+
+    def cov(self):
+        return self.sigma * np.eye(self.nf)
+
     def default_prior(self):
         """Return default prior distribution."""
         f = self.nf
@@ -341,12 +351,22 @@ class MGLRComponent(MixtureComponentCache):
     def fit(self):
         self.fit_posterior()
 
-    def pdf(self, X):
-        """Multivariate normal probability density function."""
-        return 0.0
+    def logpdf(self, X, y):
+        """GMLR log probability density function."""
+        return stats.multivariate_normal.logpdf(y, self.mean(X), self.cov())
+
+    def pdf(self, X, y):
+        """GMLR probability density function."""
+        return np.exp(self.logpdf(X, y))
 
     def llikelihood(self):
         """Compute marginal log likelihood of data given the observed
         data instances assigned to this component.
+
+        Eq. (4) from Banerjee's BLM: Gory Details.
         """
-        return 1.0
+        sigma = self.sigma
+        reg = self.X.dot(self.posterior.mu)
+        residuals = self.y - reg
+        return (self.n * np.log(2 * np.pi * sigma)
+                + (1 / sigma) * residuals.dot(residuals)) * -0.5
