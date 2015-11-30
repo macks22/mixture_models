@@ -1,0 +1,6 @@
+# Python files
+*.pyc
+*.pyo
+
+# Non-plaintext doc files
+*.pdf
