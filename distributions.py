@@ -225,6 +225,61 @@ class GIW(object):
         return self.mu, Sigma
 
 
+class GIG(object):
+    """Gaussian Inverse-Gamma prior for Bayesian linear model."""
+    __slots__ = ['mu', 'V', 'a', 'b', '_Vinv', '_b_cache', '_sm']
+
+    def __init__(self, mu, V, a, b, Vinv=None):
+        self.mu = mu  # mean
+        self.V = V    # scale matrix
+        self.a = float(a)  # shape
+        self.b = float(b)  # rate
+
+        # Terms for Psi update invariant to data.
+        self._Vinv = np.linalg.inv(V) if Vinv is None else Vinv
+        self._b_cache = b + 0.5 * mu.dot(self._Vinv).dot(mu)
+        self._sm = self._Vinv.dot(mu)
+
+    @property
+    def d(self):
+        return self.mu.shape[0]
+
+    def rvs(self):
+        var = stats.invgamma.rvs(self.a, self.b)
+        mu = stats.multivariate_normal.rvs(self.mu, var * self.V)
+        return mu, var
+
+    def copy(self):
+        return GIG(self.mu, self.V, self.a, self.b)
+
+    def conjugate_updates(self, n, x_ssq, y_ssq, xy, obj=None):
+        """Return GIW with conjugate hyper-parameter updates given sufficient
+        statistics.
+
+        Args:
+            n (int): Number of samples observed (rows in X).
+            x_ssq (np.ndarray): f x f sum of squares from data matrix X.
+            y_ssq (float): sum of squares from observations y.
+            xy (np.ndarray): f x 1 matrix multiplication of X^T y.
+            obj (GIG): Update the instance variables of this object to be the
+                posteriors resulting from the conjugate updates.
+        """
+        V = np.linalg.inv(self._Vinv + x_ssq)
+        Vinv = np.linalg.inv(V)
+        mu = V.dot(self._sm + xy)
+
+        a = self.a + n * 0.5
+        b = self._b_cache + 0.5 * (y_ssq - mu.dot(Vinv).dot(mu))
+
+        return GIG(mu, V, a, b, Vinv) if obj is None else \
+               GIG.__init__(obj, mu, V, a, b, Vinv)
+
+    def mean(self):
+        """Return expected value for mu, sigma."""
+        sigma = self.a / self.b
+        return self.mu, sigma
+
+
 class AlphaGammaPrior(object):
     """Gamma prior distribution for Dirichlet concentration parameter alpha."""
 
