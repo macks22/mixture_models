@@ -2,6 +2,8 @@
 Gibbs sampling for Infinite Gaussian Mixture Model.
 
 """
+import logging
+
 import numpy as np
 import scipy as sp
 import scipy.stats as stats
@@ -9,12 +11,69 @@ import scipy.special as spsp
 import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
-from gibbs_gmm import GMM
+import gibbs_gmm
 from component import GaussianComponent
 from distributions import AlphaGammaPrior
 
 
-class IGMM(GMM):
+class IGMMTrace(object):
+    __slots__ = ['ll', 'alpha', 'pi', 'mu', 'Sigma', 'H_ik']
+
+    def __init__(self, nsamples, n, f):
+        """Initialize empty storage for n samples of each parameter.
+        Each parameter is stored in an ndarray with the first index being for
+        the sample number.
+
+        Args:
+            nsamples (int): Number of Gibbs samples to store for each parameter.
+            n (int): Number of data instances being learned on.
+            f (int): Number features the model is being learned on.
+
+        """
+        self.ll = np.ndarray((nsamples,), float)      # log-likelihood at each step
+        self.alpha = np.ndarray((nsamples,), float)  # concentration parameter
+        self.pi = np.ndarray((nsamples,), object)     # mixture weights
+        self.mu = np.ndarray((nsamples,), object)     # component means
+        self.Sigma = np.ndarray((nsamples,), object)  # component covariance matrices
+        self.H_ik = np.ndarray((nsamples, n), object) # posterior mixture memberships
+
+    def expectation(self):
+        labels = set(key for d in self.mu for key in d.keys())
+        max_k = len(labels)
+        lmap = dict(zip(np.arange(max_k), labels))
+
+        nsamples = self.ll.shape[0]
+        n = self.H_ik.shape[1]
+        f = self.mu[0].values()[0].shape[0]
+
+        E = {
+            'alpha': self.alpha.mean(),
+            'H_ik':  np.ndarray((n, max_k)),
+            'pi':    np.ndarray((max_k,)),
+            'mu':    np.ndarray((max_k, f)),
+            'Sigma': np.ndarray((max_k, f, f))
+        }
+
+        indices = np.arange(nsamples)
+        mu_zeros = np.zeros(f)
+        Sigma_zeros = np.zeros((f, f))
+        for i, k in lmap.items():
+            E['pi'][i] = \
+                sum(self.pi[idx].get(k, 0.) for idx in indices) / nsamples
+            E['mu'][i] = \
+                sum(self.mu[idx].get(k, mu_zeros) for idx in indices) / nsamples
+            E['Sigma'][i] = \
+                sum(self.Sigma[idx].get(k, Sigma_zeros) for idx in indices)\
+                / nsamples
+
+            for _i in range(n):
+                E['H_ik'][_i, i] = \
+                    sum(self.H_ik[idx, _i].get(k, 0.) for idx in indices)\
+                    / nsamples
+        return E
+
+
+class IGMM(gibbs_gmm.GMM):
     """Infinite Gaussian Mixture Model using Dirichlet Process prior."""
 
     def __init__(self):
@@ -129,16 +188,10 @@ class IGMM(GMM):
 
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
-        store = int(keeping / 2)
+        store = int(keeping / self.thin_step)
 
-        alphas = np.ndarray(store, float)  # concentration parameter
-        pi = np.ndarray(store, object)     # mixture weights
-        H_ik = np.ndarray((store, n), object)  # posterior mixture responsibilities
-        mu = np.ndarray(store, object)     # component means
-        Sigma = np.ndarray(store, object)  # component covariance matrices
-        ll = np.ndarray(store, float)      # log-likelihood at each step
-
-        print('initial log-likelihood: %.3f' % self.llikelihood())
+        trace = IGMMTrace(store, n, f)
+        logging.info('initial log-likelihood: %.3f' % self.llikelihood())
 
         # Run collapsed Gibbs sampling to fit the model.
         indices = np.arange(n)
@@ -214,26 +267,25 @@ class IGMM(GMM):
                 # save posterior responsibility each component takes for
                 # explaining data instance i
                 if saving_sample:
-                    H_ik[idx, i] = dict(zip(self.labels, Pk[:next_k]))
+                    trace.H_ik[idx, i] = dict(zip(self.labels, Pk[:next_k]))
 
             if logging_iter:
                 llik = self.llikelihood()
-                print('sample %d, %d comps, log-likelihood: %.3f' % (
+                logging.info('sample %d, %d comps, log-likelihood: %.3f' % (
                     iternum, self.K, llik))
 
                 if saving_sample:
-                    alphas[idx] = alpha
-                    pi[idx] = dict(zip(self.labels, Pk[:next_k]))
-                    stats = \
-                        [comp.posterior.rvs() for comp in self.comps.values()]
-                    mu[idx] = dict(zip(self.labels, np.r_[[stat[0] for stat in stats]]))
-                    Sigma[idx] = dict(zip(self.labels, np.r_[[stat[1] for stat in stats]]))
-                    ll[idx] = llik
+                    trace.alpha[idx] = alpha
+                    trace.pi[idx] = dict(zip(self.labels, Pk[:next_k]))
+                    mus, Sigmas = self.posterior_rvs()
+                    trace.mu[idx] = dict(zip(self.labels, mus))
+                    trace.Sigma[idx] = dict(zip(self.labels, Sigmas))
+                    trace.ll[idx] = llik
 
-        print('sample %d, %d comps, log-likelihood: %.3f' % (
+        logging.info('sample %d, %d comps, log-likelihood: %.3f' % (
             iternum, self.K, llik))
 
-        return ll, alphas, H_ik, pi, mu, Sigma
+        return trace
 
     def label_llikelihood(self):
         """Calculate ln(P(z | alpha)), the marginal log-likelihood of the
@@ -250,43 +302,23 @@ if __name__ == "__main__":
     np.random.seed(1234)
     np.seterr('raise')
 
-    M = 200            # number of samples per component
-    K = 2              # initial guess for number of clusters
-    method = 'kmeans'  # parameter initialization method
+    args = gibbs_gmm.parse_args(
+        'Infer igmm model parameters for generated data.')
 
     # Generate two 2D Gaussians
+    M = args.samples_per_comp  # number of samples per component
+    K = args.K  # initial guess for number of clusters
     X = np.r_[
         stats.multivariate_normal.rvs([-5, -7], 2, M),
-        stats.multivariate_normal.rvs([2, 4], 4, M)
+        stats.multivariate_normal.rvs([4, 8], 4, M),
+        stats.multivariate_normal.rvs([0, 0], np.diag([1, 2]), M)
     ]
     true_z = np.concatenate([[k] * M for k in range(K)])
 
     igmm = IGMM()
-    ll, alphas, H_ik, pi, mu, Sigma = igmm.fit(
-        X, K, alpha=1.0, init_method=method, nsamples=100, burnin=10)
+    trace = igmm.fit(
+        X, K, alpha=1.0, init_method=args.init_method, nsamples=args.nsamples,
+        burnin=args.burnin, thin_step=args.thin_step)
 
     # Calculate expectations
-    nsamples = len(ll)
-    n, nf = X.shape
-    labels = set(key for d in mu for key in d.keys())
-    max_k = len(labels)
-    lmap = dict(zip(np.arange(max_k), labels))
-
-    E = {
-        'H_ik':  np.ndarray((n, max_k)),
-        'pi':    np.ndarray((max_k,)),
-        'mu':    np.ndarray((max_k, nf)),
-        'Sigma': np.ndarray((max_k, nf, nf))
-    }
-
-    indices = np.arange(nsamples)
-    mu_zeros = np.zeros(nf)
-    Sigma_zeros = np.zeros((nf, nf))
-    for i, k in lmap.items():
-        E['pi'][i] = sum(pi[idx].get(k, 0.0) for idx in indices) / nsamples
-        E['mu'][i] = sum(mu[idx].get(k, mu_zeros) for idx in indices) / nsamples
-        E['Sigma'][i] = sum(Sigma[idx].get(k, Sigma_zeros) for idx in indices) / nsamples
-
-        for _i in range(n):
-            E['H_ik'][_i, i] = sum(H_ik[idx, _i].get(k, 0.0) for idx in indices) / nsamples
-
+    E = trace.expectation()
