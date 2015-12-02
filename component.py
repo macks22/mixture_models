@@ -8,7 +8,7 @@ import scipy.stats as stats
 import scipy.special as spsp
 import matplotlib.pyplot as plt
 
-from distributions import multivariate_t, GIW
+from distributions import multivariate_t, GIG
 from mixture import MixtureComponent, MixtureComponentCache
 
 
@@ -195,12 +195,12 @@ class GaussianComponent(MixtureComponent):
 
 
 class MGLRComponentCache(MixtureComponentCache):
-    slots = ['x_ssq', 'y_ssq', 'xy', 'mu', 'V', 'a', 'b', 'ppm', 'ppc', 'ppdf']
+    slots = ['x_ssq', 'y_ssq', 'xy', 'mu', 'V', 'a', 'b']#, 'ppm', 'ppc', 'ppdf']
 
     def __init__(self, f):
         """Allocate space for cache variables based on number of features f."""
         self.x_ssq = np.zeros((f, f))
-        self.y_ssq = np.zeros((f,))
+        self.y_ssq = 0.0
         self.xy = np.zeros((f,))
 
         self.mu = np.zeros(f)
@@ -208,14 +208,14 @@ class MGLRComponentCache(MixtureComponentCache):
         self.a = 0
         self.b = 0
 
-        self.ppm = np.zeros((f,))
-        self.ppc = np.zeros((f, f))
-        self.ppdf = 0
+        # self.ppm = np.zeros((f,))
+        # self.ppc = np.zeros((f, f))
+        # self.ppdf = 0
 
     def store(self, comp):
         """Store stats as instance variables."""
         self.x_ssq[:] = comp._x_ssq
-        self.y_ssq[:] = comp._y_ssq
+        self.y_ssq = comp._y_ssq
         self.xy[:] = comp._xy
 
         self.mu[:] = comp.posterior.mu
@@ -223,24 +223,24 @@ class MGLRComponentCache(MixtureComponentCache):
         self.a = comp.posterior.a
         self.b = comp.posterior.b
 
-        self.ppm[:] = comp.pp.mean
-        self.ppc[:] = comp.pp.cov
-        self.ppdf = comp.pp.df
+        # self.ppm[:] = comp.pp.mean
+        # self.ppc[:] = comp.pp.cov
+        # self.ppdf = comp.pp.df
 
     def restore(self, comp):
         """Restore cached stats to component instance variables."""
         comp._x_ssq[:] = self.x_ssq
-        comp._y_ssq[:] = self.y_ssq
+        comp._y_ssq = self.y_ssq
         comp._xy[:] = self.xy
 
         GIG.__init__(comp.posterior, self.mu, self.V, self.a, self.b)
 
-        comp.pp.mean[:] = self.ppm
-        comp.pp.cov[:] = self.ppc
-        comp.pp.df = self.ppdf
+        # comp.pp.mean[:] = self.ppm
+        # comp.pp.cov[:] = self.ppc
+        # comp.pp.df = self.ppdf
 
 
-class MGLRComponent(MixtureComponentCache):
+class MGLRComponent(MixtureComponent):
     """Mixture of Gaussian Linear Regressions with conjugate GIG prior."""
 
     cache_class = MGLRComponentCache
@@ -276,7 +276,7 @@ class MGLRComponent(MixtureComponentCache):
 
         # This is set during fitting.
         self.pp = multivariate_t(
-            self.prior.mu, self.prior.Psi, self.prior.nu)  # placeholder values
+            self.prior.mu, self.prior.V, self.prior.V.shape[0] * 2)  # placeholder values
 
         # Fit params to the data.
         self.fit()
@@ -285,10 +285,38 @@ class MGLRComponent(MixtureComponentCache):
     def y(self):
         return self._y[self._instances]
 
-    @property
+    @y.setter
     def y(self, y):
         self._y = y
         self._populate_cache()
+
+    def rm_instances(self, _is):
+        if not self._instances[_is].all():
+            raise IndexError(
+                'some indices from %s not currently in component' % (
+                    str(_is)))
+
+        self._cache_stats()
+        self._last_i_removed = _is
+        self._instances[_is] = False  # remove instance
+        self._cache_rm_instances(_is)  # remove from cached stats
+        self.fit()  # handles empty component case
+
+    def add_instances(self, _is):
+        """Add more than one instance to this component.
+        This is done by setting all elements _is of the `instances` mask True.
+        """
+        # ignore instances already in component.
+        _is = np.array([i for i in _is if not self._instances[i]])
+        if _is.shape[0] == 0:
+            return
+
+        self._instances[_is] = True
+        if (self._last_i_removed == _is).all():
+            self._restore_from_cache()
+        else:
+            self._cache_add_instances(_is)  # add to cached stats
+            self.fit()
 
     @property
     def sigma(self):
@@ -304,8 +332,8 @@ class MGLRComponent(MixtureComponentCache):
         """Return default prior distribution."""
         f = self.nf
         mu = np.zeros((f,))
-        V = np.ones((f, f))
-        return GIW(mu, V, 1.0, 1.0)
+        V = np.eye(f)
+        return GIG(mu, V, 1.0, 1.0)
 
     def _populate_cache(self):
         """Cache stats used during fitting."""
@@ -327,6 +355,20 @@ class MGLRComponent(MixtureComponentCache):
             self._y_ssq -= (y ** 2)
             self._xy -= x.dot(y)
 
+    def _cache_rm_instances(self, _is):
+        """Remove more than one instnace from cached sufficient stats."""
+        X = self._X[_is]
+        y = self._y[_is]
+        new_n = self.n - X.shape[0]
+        if new_n == 0:
+            self._x_ssq[:] = 0
+            self._y_ssq[:] = 0
+            self._xy[:] = 0
+        else:
+            self._x_ssq -= X.T.dot(X)
+            self._y_ssq -= y.dot(y)
+            self._xy -= X.T.dot(y)
+
     def _cache_add_instance(self, i):
         """Add sufficient stats from this instance to cached stats."""
         x = self._X[i]
@@ -334,6 +376,14 @@ class MGLRComponent(MixtureComponentCache):
         self._x_ssq += x[:, None].dot(x[None, :])
         self._y_ssq += (y ** 2)
         self._xy += x.dot(y)
+
+    def _cache_add_instances(self, _is):
+        """Add sufficient stats from more than one instance to cached stats."""
+        X = self._X[_is]
+        y = self._y[_is]
+        self._x_ssq += X.T.dot(X)
+        self._y_ssq += y.dot(y)
+        self._xy += X.T.dot(y)
 
     def sufficient_stats(self):
         """Return sample size, mean, and sum of squares."""
@@ -343,10 +393,13 @@ class MGLRComponent(MixtureComponentCache):
         """Posterior predictive parameter calculations.
         Eq. (20) from Banerjee's BLM: Gory Details.
         """
-        self.pp.mean = X.dot(self.posterior.mu)  # n x 1
-        self.pp.df = self.posterior.a * 2
+        mean = X.dot(self.posterior.mu)  # n x 1
+        df = self.posterior.a * 2
         pp_cov = ((self.posterior.a / self.posterior.b)
-                  * np.eye(self.nf) + X.dot(self.posterior.V).dot(X.T)) # n x n
+                  * np.eye(mean.shape[0])
+                  + X.dot(self.posterior.V).dot(X.T)) # n x n
+
+        self.pp = multivariate_t(mean, pp_cov, df)
 
     def fit(self):
         self.fit_posterior()
