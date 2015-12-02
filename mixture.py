@@ -28,7 +28,7 @@ class MixtureModel(object):
                     init_method, ', '.join(supported)))
 
         if init_method in cls._not_implemented:
-            raise NotImplemented(
+            raise NotImplementedError(
                 '%s initialization not yet implemented' % init_method)
 
 
@@ -57,15 +57,15 @@ class MixtureModel(object):
             return 0
 
     def init_comps(self):
-        raise NotImplemented(
+        raise NotImplementedError(
             'init_comps should be implemented by base classes')
 
     def fit(self):
-        raise NotImplemented(
+        raise NotImplementedError(
             'fit should be implemeneted by base classes')
 
     def label_llikelihood(self):
-        raise NotImplemented(
+        raise NotImplementedError(
             'label_llikelihood should be implemeneted by base classes')
 
     def label_likelihood(self):
@@ -75,7 +75,7 @@ class MixtureModel(object):
         return np.exp(self.label_llikelihood())
 
     def llikelihood(self):
-        raise NotImplemented(
+        raise NotImplementedError(
             'llikelihood should be implemeneted by base classes')
 
     def likelihood(self):
@@ -89,10 +89,10 @@ class MixtureModel(object):
 class MixtureComponentCache(object):
 
     def store(self, comp):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def restore(self, comp):
-        raise NotImplemented()
+        raise NotImplementedError()
 
 
 class MixtureComponent(object):
@@ -115,11 +115,11 @@ class MixtureComponent(object):
         self.posterior = self.prior.copy()
 
     def default_prior(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def _populate_cache(self):
         """Cache stats used during fitting."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     @property
     def X(self):
@@ -153,7 +153,7 @@ class MixtureComponent(object):
 
     def _cache_rm_instance(self, i):
         """Remove sufficient stats from sample mean & sum of squares."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def rm_instance(self, i):
         if not self._instances[i]:
@@ -167,7 +167,7 @@ class MixtureComponent(object):
 
     def _cache_add_instance(self, i):
         """Add sufficient stats from this instance to cached stats."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def add_instance(self, i):
         """Add an instance to this Gaussian component.
@@ -185,7 +185,7 @@ class MixtureComponent(object):
 
     def sufficient_stats(self):
         """Return sufficient statistics."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def fit_posterior(self):
         """Update posterior using conjugate hyper-parameter updates based on
@@ -196,7 +196,7 @@ class MixtureComponent(object):
 
     def fit_pp(self):
         """Posterior predictive parameter calculations."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def fit(self):
         """Perform conjugate updates of prior and posterior predictive
@@ -207,13 +207,13 @@ class MixtureComponent(object):
 
     def pdf(self, x):
         """Multivariate normal probability density function."""
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def llikelihood(self):
         """Compute marginal log likelihood of data given the observed
         data instances assigned to this component.
         """
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def likelihood(self):
         """Compute marginal likelihood of data given the observed
