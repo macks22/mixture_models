@@ -7,11 +7,55 @@ import argparse
 
 import numpy as np
 import scipy as sp
+import scipy.stats as stats
 import scipy.special as spsp
-from scipy import stats
+import scipy.cluster.vq as spvq
 
+import cli
 from mixture import MixtureModel
-from component import GaussianComponent
+from component import MGLRComponent
+from distributions import AlphaGammaPrior
+
+
+def gen_data(l=4, n=10):
+    """Sample l trajectories, n observations each, from three clusters
+    (polynomials). Let the first column of X be all 1s for the global intercept,
+    the second column be the time of the observation in the trajectory, and the
+    third column be some independent feature.
+
+    Args:
+        l (int): number of trajectories per component
+        n (int): number of time steps per trajectory
+    """
+    f1 = lambda x: 120 + 4 * x
+    f2 = lambda x: 10 + 2 * x + 0.1 * x ** 2
+    f3 = lambda x: 250 - 0.75 * x
+
+    K = 3      # number of components
+    M = l * K  # total number of trajectories
+    N = M * n  # total number of observations
+
+    samples = np.zeros((M, n))
+    xs = np.random.normal(1.0, 1.0, (M, n))
+
+    for i, model in enumerate([f1, f2, f3]):
+        for traj in range(l):
+            idx = i * l + traj  # stride + step
+            for time in range(n):
+                samples[idx, time] = model(xs[idx, time])
+
+    X = np.zeros((N, 4))
+    y = np.zeros(N)
+    X[:, 0] = 1  # intercept term
+    idx = 0
+    for (traj, time), y_sample in np.ndenumerate(samples):
+        X[idx, 1] = time
+        X[idx, 2] = xs[traj, time]
+        X[idx, 3] = xs[traj, time] ** 2
+        y[idx] = y_sample
+        idx += 1
+
+    return X, y
 
 
 class PMLRTrace(object):
@@ -77,12 +121,14 @@ class PMLR(MixtureModel):
         sigma = np.r_[[stat[1] for stat in stats]]
         return W, sigma
 
-    def init_comps(self, X, y, init_method='kmeans', iters=100):
+    def init_comps(self, X_rw, y_rw, init_method='kmeans', iters=100):
         """Initialize mixture components.
 
         Args:
-            X (np.ndarray): Data matrix with instances as rows.
-            y (np.ndarray): Observation vector corresponding to X.
+            X_rw (np.ndarray): Row-wise data matrix; has primary entity as rows,
+                secondary entity as columns, and feature vectors as third
+                dimension.
+            y_rw (np.ndarray): Observation vectors corresponding to X.
             init_method (str): Method to use for initialization. One of:
                 'kmeans': initialize using k-means clustering with K clusters.
                 'random': randomly assign instances to components.
@@ -91,35 +137,44 @@ class PMLR(MixtureModel):
                 initialization if init_method is 'kmeans'.
         """
         self.validate_init_method(init_method)
-        return self._init_comps(X, y, init_method, iters)
+        return self._init_comps(X_rw, y_rw, init_method, iters)
 
-    def _init_comps(self, X, y, init_method='kmeans', iters=100):
+    def _init_comps(self, X_rw, y_rw, init_method='kmeans', iters=100):
         """Choose an initial assignment of instances to components using
         the specified init_method. This also initializes the component
         parameters based on the assigned data instances.
         """
-        n, f = X.shape  # number of instances, number of features
+        n, m, f = X_rw.shape
+        N = n * m
+        X = X_rw.reshape(N, f)
+        y = y_rw.reshape(N)
         self.labels = np.arange(self.K)
 
+        if init_method == 'random':
+            self.z = np.random.randint(0, self.K, n)
+            self.Z = np.repeat(self.z, m)
+            self.comps = [MGLRComponent(X, y, self.Z == k) for k in self.labels]
+        # Currently broken for this model.
         if init_method == 'kmeans':
             centroids, self.z = spvq.kmeans2(X, self.K, minit='points', iter=iters)
-            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
+            self.Z = np.repeat(self.z, m)
+            self.comps = [MGLRComponent(X, y, self.Z == k) for k in self.labels]
         elif init_method == 'em':
             pass
-        elif init_method == 'random':
-            self.z = np.random.randint(0, self.K, n)
-            self.comps = [GaussianComponent(X, self.z == k) for k in self.labels]
         elif init_method == 'load':
             pass
 
-    def fit(self, X, y, K, alpha=0.0, init_method='kmeans', iters=100,
+    def fit(self, X, y, n, m, K, alpha=0.0, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
         """Fit the parameters of the model using the data X.
         See `init_comps` method for info on parameters not listed here.
 
         Args:
-            X (np.ndarray): Data matrix with instances as rows.
+            X (np.ndarray): Data matrix with primary entity as first index,
+                secondary entity as second index, and feature vectors as third.
             y (np.ndarray): Observation vector corresponding to X.
+            n (int): Number of unique students.
+            m (int): Number of courses per student.
             K (int): Fixed number of components.
             alpha (float): Dirichlet hyper-parameter alpha; defaults to K.
             nsamples (int): Number of Gibbs samples to draw.
@@ -127,9 +182,13 @@ class PMLR(MixtureModel):
             thin_step (int): Stepsize for thinning to reduce autocorrelation.
         """
         self.K = K
-        self.init_comps(X, y, init_method, iters)
+        N, f = X.shape
 
-        n, f = X.shape
+        # Reshape the data matrices into the tensor/matrix format.
+        X_rw = X.reshape((n, m, f))  # rw = row-wise
+        y_rw = y.reshape((n, m))
+
+        self.init_comps(X_rw, y_rw, init_method, iters)
         self.alpha_prior = AlphaGammaPrior(alpha if alpha else float(K))
 
         self.nsamples = nsamples
@@ -144,6 +203,7 @@ class PMLR(MixtureModel):
 
         # We'll use this for our conditional multinomial probs.
         Pk = np.ndarray(K)
+        probs = np.ndarray(K)
         denom = float(n + alpha - 1)
 
         # Init trace vars for parameters.
@@ -162,18 +222,22 @@ class PMLR(MixtureModel):
                 idx = (iternum - self.burnin) / self.thin_step
 
             for i in np.random.permutation(indices):
-                x = X[i]
+                _is = range(i * m, (i + 1) * m)
+                xs = X_rw[i]
+                ys = y_rw[i]
 
                 # Remove X[i]'s stats from component z[i].
                 old_k = self.z[i]
-                self.comps[old_k].rm_instance(i)
+                self.comps[old_k].rm_instances(_is)
 
                 # Calculate probability of instance belonging to each comp.
                 # Calculate P(z[i] = k | z[-i], alpha)
                 weights = (self.counts + alpha_k) / denom
 
                 # Calculate P(X[i] | X[-i], pi, mu, sigma)
-                probs = np.array([comp.pp.pdf(x) for comp in self.comps])
+                for k, comp in enumerate(self.comps):
+                    comp.fit_pp(xs)
+                    probs[k] = comp.pp.pdf(ys)
 
                 # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
                 Pk[:] = probs * weights
@@ -185,7 +249,7 @@ class PMLR(MixtureModel):
                 new_k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
 
                 # Add X[i] to selected component. Sufficient stats are updated.
-                self.comps[new_k].add_instance(i)
+                self.comps[new_k].add_instances(_is)
                 self.z[i] = new_k
 
                 # save posterior responsibility each component takes for
@@ -199,7 +263,35 @@ class PMLR(MixtureModel):
 
                 if saving_sample:
                     trace.pi[idx] = Pk
-                    trace.mu[idx], trace.sigma[idx] = self.posterior_rvs()
+                    trace.W[idx], trace.sigma[idx] = self.posterior_rvs()
                     trace.ll[idx] = llik
 
         return trace
+
+    def llikelihood(self):
+        return 1.0  # TODO: implement
+
+
+if __name__ == "__main__":
+    args = cli.parse_args('Infer parameters for PMLR.')
+
+    l = 5   # number of students from each component.
+    m = 10  # courses per student
+
+    K = 3      # number of components (fixed due to data gen method)
+    n = l * K  # total number of students generated
+
+    # X and y are (student x course x predictors).
+    # Each component corresponds to a polynomial.
+    # We consider these to be "student learner profiles",
+    # and generate l students from each profile.
+    X, y = gen_data(l, m)
+    N, f = X.shape
+
+    pmlr = PMLR()
+    trace = pmlr.fit(
+        X, y, n, m, K, init_method=args.init_method, nsamples=args.nsamples,
+        burnin=args.burnin, thin_step=args.thin_step)
+
+    # Calculate expectations using Monte Carlo estimates.
+    E = trace.expectation()
