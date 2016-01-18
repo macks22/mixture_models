@@ -12,45 +12,224 @@ import numpy as np
 from scipy import stats
 
 
-def gen_data(l=4, n=10):
-    """Sample 4 trajectories, 10 observations each, from three clusters
+def gen_data(t=4, M=10):
+    """Sample t trajectories, M observations each, from three clusters
     (polynomials). Let the first column of X be all 1s for the global intercept,
     the second column be the time of the observation in the trajectory, and the
     third column be some independent feature.
 
     Args:
-        l (int): number of trajectories per component
-        n (int): number of time steps per trajectory
+        N (int): number of trajectories per component
+        M (int): number of time steps per trajectory
     """
     f1 = lambda x: 120 + 4 * x
     f2 = lambda x: 10 + 2 * x + 0.1 * x ** 2
     f3 = lambda x: 250 - 0.75 * x
 
     K = 3      # number of components
-    M = l * K  # total number of trajectories
-    N = M * n  # total number of observations
+    N = t * K  # total number of trajectories
+    O = N * M  # total number of observations
 
-    samples = np.zeros((M, n))
-    xs = np.random.normal(1.0, 1.0, (M, n))
+    samples = np.zeros((N, M))
+    xs = np.random.normal(1.0, 1.0, (N, M))
 
     for i, model in enumerate([f1, f2, f3]):
-        for traj in range(l):
-            idx = i * l + traj  # stride + step
-            for time in range(n):
-                samples[idx, time] = model(xs[idx, time])
+        for traj in range(t):
+            idx = i * t + traj  # stride + step
+            for obs in range(M):
+                samples[idx, obs] = model(xs[idx, obs])
 
-    X = np.zeros((N, 4))
-    y = np.zeros(N)
+    X = np.zeros((O, 4))
+    y = np.zeros(O)
+    ids = np.arange(O).reshape(N, M)
+
     X[:, 0] = 1  # intercept term
     idx = 0
-    for (traj, time), y_sample in np.ndenumerate(samples):
-        X[idx, 1] = time
-        X[idx, 2] = xs[traj, time]
-        X[idx, 3] = xs[traj, time] ** 2
+    for (traj, obs), y_sample in np.ndenumerate(samples):
+        X[idx, 1] = obs
+        X[idx, 2] = xs[traj, obs]
+        X[idx, 3] = xs[traj, obs] ** 2
         y[idx] = y_sample
         idx += 1
 
-    return X, y
+    return X, y, ids
+
+
+class RMix(object):
+    """Regression Mixture for Clustering Trajectories."""
+
+    def __init__(self, K):
+        self.K = K
+
+        # Set parameters to initial values where possible.
+        # Singular naming denotes vector-valued; plural naming denotes matrix.
+        self.weight = np.ndarray((K,))    # 1 x K
+        self.variance = np.ndarray((K,))  # 1 x K
+        self.coefficients = None          # K x p  (p unknown)
+        self.memberships = None           # N x K  (N unknown)
+
+    def fit(self, X_mat, y_mat, niters=np.iinfo(np.int).max, epsilon=0.00001,
+            warmup=5):
+        """Fit the model to the given data.
+
+        The Regression Mixture (RMix) model clusters users based on the
+        observations associated with them. The parameters learned for each
+        cluster include the:
+
+            mixing weights: $\pi_k$,
+            regression coefficients: $\beta_k$, and
+            variance terms: $\sigma_k^2$.
+
+        The posterior mixing weights ($H_{n,k}$) are also learned -- one for
+        each user for each cluster (N * K total). These are soft membership
+        weights that constitute the clustering obtained by the model fit.
+
+        Args:
+            X_mat (np.ndarray[ndim=3, dtype=np.float]):
+                Matrix of feature vectors for user-item dyads. These should be
+                arranged in an N x M x p sparse 3D matrix (tensor).
+            y_mat (np.ndarray[ndim=2, dtype=np.float]):
+                Matrix of target features for user-item dyads. These should be
+                arranged in an N x M sparse matrix.
+            niters (int):
+                Maximum number of iterations to train the model for. The model
+                is trained until the stopping threshold is reached by default.
+            epsilon (float):
+                The stopping threshold used for early stopping. Set this to None
+                if early stopping is not desired (be sure to set niters in this
+                case).
+            warmup (int):
+                Number of warmup iterations. The early stopping check will not
+                be performed during the first `warmup` iterations.
+        """
+        N, M, p = X_mat.shape
+        T = N * M
+        K = self.K
+
+        X = X_mat.reshape(T, p)
+        y = y_mat.reshape(T)
+
+        np.seterr(divide='raise')  # raise divide by 0 errors
+        eps = np.finfo(float).eps  # add to denominators which may go to 0
+
+        # We allow minor fluctuation of log-likelihood for early stopping.
+        # We track the number of iterations it has increased with a counter.
+        # If this goes above 1, we terminate.
+        bad_iterations = 0
+
+        # Init params.
+        B = np.ndarray((K, p))
+        var = np.ndarray(K)
+        pi = np.ndarray(K)
+
+        # Randomly init the N * K posterior membership probs H_{n,k}.
+        H = np.random.uniform(0, 1, (N, K))
+        H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
+
+        # Initialize log-likelihood trackers.
+        prev_llik = -np.inf  # set to lowest possible number
+        llik = np.finfo(np.inf).min  # set to next lowest
+
+        # Begin main training loop.
+        for iteration in xrange(niters):
+
+            # Estimate B_k, \sigma_k^2, \pi_k from weighted least squares
+            # solutions, using current membership probs as weights.
+            # We construct P_k as an N x N matrix whose diagonal contains the
+            # weights to be applied to X and Y during regression.
+
+            # first calculate new weights.
+            H_sums = H.sum(axis=0)
+            pi = (1. / N) * H_sums
+
+            for k in range(K):
+                P_k = np.diag(H[:, k].repeat(M, axis=0))
+
+                # calculate B_k
+                X_weighted = X.T.dot(P_k)
+                p1 = np.linalg.inv(X_weighted.dot(X))
+                p2 = X_weighted.dot(y)
+                B[k] = p1.dot(p2)
+
+                # calculate sigma_k^2
+                regress = X.dot(B[k])
+                residuals = y - regress
+                var[k] = residuals.T.dot(P_k).dot(residuals)
+
+            # divide sigmas by the membership weight sums for each component
+            var = var / H_sums
+
+            # params['B'].append(B)
+            # params['var'].append(var)
+            # params['w'].append(weight)
+
+            # Compute new membership probs using new param estimates.
+            H[:] = pi
+            sigmas = np.sqrt(var)
+            for n in range(N):
+                X_n = X_mat[n]
+                y_n = y_mat[n]
+                for k in range(K):
+                    means = X_n.dot(B[k])
+                    sigma_k = sigmas[k]
+                    for y_nm, mean_nm in zip(y_n, means):
+                        H[n, k] *= stats.norm.pdf(y_nm, mean_nm, sigma_k)
+
+            # re-normalize the membership weights
+            H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
+
+            # Loop to step 2 until log-likelihood stabilizes.
+            # Calculate expectation of complete data log-likelihood.
+            llik = 0
+            lliks = np.zeros((N, K))
+            sigmas = np.sqrt(var)
+            for n in range(N):
+                X_n = X_mat[n]
+                y_n = y_mat[n]
+                for k in range(K):
+                    llik += H[n, k] * np.log(pi[k])
+
+                    means = X_n.dot(B[k])
+                    sigma_k = sigmas[k]
+                    for y_nm, mean_nm in zip(y_n, means):
+                        lliks[n, k] += np.log(
+                            stats.norm.pdf(y_nm, mean_nm, sigma_k) + eps)
+
+            lliks *= H
+            llik += lliks.sum()
+            logging.info('%d: log-likelihood: %.4f' % (iteration, llik))
+            if np.isinf(llik):
+                raise ValueError('log-likelihood has become infinite')
+
+            # early stopping check if enabled (after iteration #5)
+            if epsilon is not None and iteration >= warmup:
+                diff = llik - prev_llik
+                if diff == 0:  # done
+                    logging.info('stopping threshold reached')
+                    break
+                elif diff <= epsilon:
+                    # allow small reductions which could be due to rounding error
+                    if diff < -0.01:
+                        bad_iterations += 1
+                        if bad_iterations > 1:
+                            logging.info('log-likelihood increased for more'
+                                         'than one iteration')
+                            break
+                else:
+                    bad_iterations = 0
+                    prev_llik = llik
+
+        self.memberships = H
+        self.coefficients = B
+        self.weight[:] = pi
+        self.variance[:] = var
+
+    def cluster(self):
+        """Hard clustering of users based on max of soft membership weights."""
+        pass
+
+    def log_likelihood(self):
+        pass
 
 
 def make_parser():
@@ -65,10 +244,10 @@ def make_parser():
         type=float, default=None,
         help='early stopping threshold for training; disabled by default')
     parser.add_argument(
-        '-l', type=int, default=4,
+        '-t', '--ntraj', type=int, default=4,
         help='number of trajectories per component')
     parser.add_argument(
-        '-n', type=int, default=10,
+        '-M', type=int, default=10,
         help='number of time steps per trajectory')
     parser.add_argument(
         '-v', '--verbose',
@@ -88,132 +267,15 @@ if __name__ == "__main__":
                logging.ERROR),
         format="[%(asctime)s]: %(message)s")
 
-    l = args.l
-    n = args.n
-
-    K = 3           # number of components
-    M = l * K  # total number of trajectories
-    # l = 4      # trajectories per component
-    # n = 10     # observations per trajectory
-    # N = M * n  # total number of observations
+    K = 3               # number of components
+    N = args.ntraj * K  # number of users
+    M = args.M          # number of items
 
     # X and y are (entity x time x predictors).
-    X, y = gen_data(l, n)
-    N, p = X.shape
-    X_rw = X.reshape((M, n, p))  # rw = row-wise
-    y_rw = y.reshape((M, n))
+    X, y, ids = gen_data(args.ntraj, M)
+    _, p = X.shape
+    X_rw = X.reshape((N, M, p))  # rw = row-wise
+    y_rw = y.reshape((N, M))
 
-    # Init params to 0s.
-    B = np.ndarray((K, p))
-    var = np.ndarray(K)
-    weight = np.ndarray(K)
-
-    # params = {
-    #     'B': [],
-    #     'var': [],
-    #     'w': []
-    # }
-
-    # handle divide by 0 errors
-    np.seterr(divide='raise')  # raise divide by 0 errors
-    eps = np.finfo(float).eps  # add to denominators which may go to 0
-
-    # We allow minor fluctuation of log-likelihood for stopping.
-    # It can increase for one iteration; we'll stop on second.
-    # We track it with a counter.
-    bad_iterations = 0
-
-    # Randomly init membership probs h_{jk}.
-    # There are M * K of these.
-    # Note: the posteriors of this model end up with per-row membership weights
-    H = np.random.uniform(0, 1, (M, K))
-    H = H / H.sum(axis=1)[:, np.newaxis].repeat(K, axis=1)
-
-    prev_llik = -np.inf  # set to lowest possible number
-    llik = np.finfo(np.inf).min  # set to next lowest
-
-    niters = np.iinfo(np.int).max if args.niters is None else args.niters
-    iter_range = xrange(niters)
-    for iteration in iter_range:
-
-        # Estimate B_k, \sigma_k^2, w_k from weighted least squares solutions,
-        # using current membership probs as weights.
-        # We construct H_k as an N x N matrix whose diagonal contains the
-        # weights to be applied to X and Y during regression.
-
-        # first calculate new weights.
-        H_sums = H.sum(axis=0)
-        weight = (1. / M) * H_sums
-
-        for k in range(K):
-            H_k = np.diag(H[:, k].repeat(n, axis=0))
-
-            # calculate B_k
-            tmp = X.T.dot(H_k)
-            p1 = np.linalg.inv(tmp.dot(X))
-            p2 = tmp.dot(y)
-            B[k] = p1.dot(p2)
-
-            # calculate sigma_k^2
-            regress = X.dot(B[k])
-            residuals = y - regress
-            var[k] = residuals.T.dot(H_k).dot(residuals)
-
-        # divide sigmas by the membership weight sums for each component
-        var = var / H_sums
-
-        # params['B'].append(B)
-        # params['var'].append(var)
-        # params['w'].append(weight)
-
-        # Compute new membership probs using new param estimates.
-        H[:] = weight
-        for j in range(M):
-            X_j = X_rw[j]
-            y_j = y_rw[j]
-            for k in range(K):
-                means = X_j.dot(B[k])
-                sigma = np.sqrt(var[k])
-                for time in range(n):
-                    H[j, k] *= stats.norm.pdf(y_j[time], means[time], sigma)
-
-        # re-normalize the membership weights
-        H = H / H.sum(axis=1)[:, np.newaxis].repeat(K, axis=1)
-
-        # Loop to step 2 until log-likelihood stabilizes.
-        # Calculate expectation of complete data log-likelihood.
-        llik = 0
-        lliks = np.zeros((M, K))
-        for j in range(M):
-            X_j = X_rw[j]
-            y_j = y_rw[j]
-            for k in range(K):
-                llik += H[j, k] * np.log(weight[k])
-
-                means = X_j.dot(B[k])
-                sigma = np.sqrt(var[k])
-                for time in range(n):
-                    lliks[j, k] += np.log(
-                        stats.norm.pdf(y_j[time], means[time], sigma) + eps)
-
-        lliks *= H
-        llik += lliks.sum()
-        logging.info('%d: log-likelihood: %.4f' % (iteration, llik))
-        if np.isinf(llik):
-            raise ValueError('log-likelihood has become infinite')
-
-        # early stopping check if enabled (after iteration #5)
-        if args.epsilon is not None and iteration > 5:
-            diff = llik - prev_llik
-            if diff == 0:  # done
-                break
-            elif diff <= args.epsilon:
-                # allow small reductions which could be due to rounding error
-                if diff < -0.01:
-                    bad_iterations += 1
-                    if bad_iterations > 1:
-                        break
-            else:
-                bad_iterations = 0
-                prev_llik = llik
-
+    rmix = RMix(K)
+    rmix.fit(X_rw, y_rw, args.niters, args.epsilon)
