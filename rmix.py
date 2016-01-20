@@ -5,11 +5,14 @@ Implement mixture of regressions model from the paper:
     Scott Gaffney and Padhraic Smyth
 
 """
+import sys
 import logging
 import argparse
 
 import numpy as np
 from scipy import stats
+
+MODEL = {}
 
 
 def gen_data(t=4, M=10):
@@ -126,9 +129,19 @@ class RMix(object):
         H = np.random.uniform(0, 1, (N, K))
         H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
 
+        # Set human-readable aliases for parameters.
+        self.memberships = H
+        self.coefficients = B
+        self.weight = pi
+        self.variance = var
+
         # Initialize log-likelihood trackers.
         prev_llik = -np.inf  # set to lowest possible number
         llik = np.finfo(np.inf).min  # set to next lowest
+
+        # Useful things.
+        I_M = np.eye(M)  # multiplied by variances for diagonal cov matrices.
+        lliks = np.zeros((N, K))  # overwritten each iteration
 
         # Begin main training loop.
         for iteration in xrange(niters):
@@ -164,36 +177,45 @@ class RMix(object):
             # params['w'].append(weight)
 
             # Compute new membership probs using new param estimates.
-            H[:] = pi
-            sigmas = np.sqrt(var)
-            for n in range(N):
-                X_n = X_mat[n]
-                y_n = y_mat[n]
-                for k in range(K):
-                    means = X_n.dot(B[k])
-                    sigma_k = sigmas[k]
-                    for y_nm, mean_nm in zip(y_n, means):
-                        H[n, k] *= stats.norm.pdf(y_nm, mean_nm, sigma_k)
+            means = X_mat.dot(B.T)
+            sigma = np.sqrt(var)
+            # for n in range(N):
+            #     y_n = y_mat[n]
+            #     for k in range(K):
+            #         H[n, k] *= stats.multivariate_normal.pdf(
+            #             y_n, means[n, :, k], I_M * var[k])
+
+            for k in range(K):
+                lliks[:, k] = (
+                    stats.norm.logpdf(
+                        y_mat.reshape(T),
+                        means[:, :, k].reshape(T),
+                        sigma[k]
+                    ).reshape(N, M)).sum(axis=1)
 
             # re-normalize the membership weights
+            H = np.exp(lliks + np.log(pi))
             H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
 
             # Loop to step 2 until log-likelihood stabilizes.
             # Calculate expectation of complete data log-likelihood.
-            llik = 0
-            lliks = np.zeros((N, K))
-            sigmas = np.sqrt(var)
-            for n in range(N):
-                X_n = X_mat[n]
-                y_n = y_mat[n]
-                for k in range(K):
-                    llik += H[n, k] * np.log(pi[k])
+            llik = (H * np.log(pi)).sum()
 
-                    means = X_n.dot(B[k])
-                    sigma_k = sigmas[k]
-                    for y_nm, mean_nm in zip(y_n, means):
-                        lliks[n, k] += np.log(
-                            stats.norm.pdf(y_nm, mean_nm, sigma_k) + eps)
+            # means = X_mat.dot(B.T)
+            # for n in range(N):
+            #     y_n = y_mat[n]
+            #     for k in range(K):
+            #         lliks[n, k] = stats.multivariate_normal.logpdf(
+            #             y_n, means[n, :, k], I_M * var[k])
+
+            # Re-use sigma and means from membership calculations.
+            # for k in range(K):
+            #     lliks[:, k] = (
+            #         stats.norm.logpdf(
+            #             y_mat.reshape(T),
+            #             means[:, :, k].reshape(T),
+            #             sigma[k]
+            #         ).reshape(N, M)).sum(1)
 
             lliks *= H
             llik += lliks.sum()
@@ -211,24 +233,23 @@ class RMix(object):
                     # allow small reductions which could be due to rounding error
                     if diff < -0.01:
                         bad_iterations += 1
-                        if bad_iterations > 1:
+                        if bad_iterations > 2:
                             logging.info('log-likelihood increased for more'
-                                         'than one iteration')
+                                         ' than two iteration')
                             break
                 else:
                     bad_iterations = 0
                     prev_llik = llik
-
-        self.memberships = H
-        self.coefficients = B
-        self.weight[:] = pi
-        self.variance[:] = var
 
     def cluster(self):
         """Hard clustering of users based on max of soft membership weights."""
         pass
 
     def log_likelihood(self):
+        pass
+
+    def predict(self, X):
+        """Make predictions for a set of dyads using learned model."""
         pass
 
 
