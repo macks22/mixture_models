@@ -153,7 +153,7 @@ class RMix(object):
 
             # first calculate new weights.
             H_sums = H.sum(axis=0)
-            pi = (1. / N) * H_sums
+            pi[:] = (1. / N) * H_sums
 
             for k in range(K):
                 P_k = np.diag(H[:, k].repeat(M, axis=0))
@@ -170,20 +170,11 @@ class RMix(object):
                 var[k] = residuals.T.dot(P_k).dot(residuals)
 
             # divide sigmas by the membership weight sums for each component
-            var = var / H_sums
-
-            # params['B'].append(B)
-            # params['var'].append(var)
-            # params['w'].append(weight)
+            var[:] = var / H_sums
 
             # Compute new membership probs using new param estimates.
             means = X_mat.dot(B.T)
             sigma = np.sqrt(var)
-            # for n in range(N):
-            #     y_n = y_mat[n]
-            #     for k in range(K):
-            #         H[n, k] *= stats.multivariate_normal.pdf(
-            #             y_n, means[n, :, k], I_M * var[k])
 
             for k in range(K):
                 lliks[:, k] = (
@@ -194,31 +185,13 @@ class RMix(object):
                     ).reshape(N, M)).sum(axis=1)
 
             # re-normalize the membership weights
-            H = np.exp(lliks + np.log(pi))
-            H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
+            H[:] = np.exp(lliks + np.log(pi))
+            H /= H.sum(axis=1)[:, None].repeat(K, axis=1)
 
             # Loop to step 2 until log-likelihood stabilizes.
             # Calculate expectation of complete data log-likelihood.
-            llik = (H * np.log(pi)).sum()
-
-            # means = X_mat.dot(B.T)
-            # for n in range(N):
-            #     y_n = y_mat[n]
-            #     for k in range(K):
-            #         lliks[n, k] = stats.multivariate_normal.logpdf(
-            #             y_n, means[n, :, k], I_M * var[k])
-
-            # Re-use sigma and means from membership calculations.
-            # for k in range(K):
-            #     lliks[:, k] = (
-            #         stats.norm.logpdf(
-            #             y_mat.reshape(T),
-            #             means[:, :, k].reshape(T),
-            #             sigma[k]
-            #         ).reshape(N, M)).sum(1)
-
             lliks *= H
-            llik += lliks.sum()
+            llik = (H * np.log(pi)).sum() + lliks.sum()
             logging.info('%d: log-likelihood: %.4f' % (iteration, llik))
             if np.isinf(llik):
                 raise ValueError('log-likelihood has become infinite')
@@ -236,7 +209,18 @@ class RMix(object):
                         if bad_iterations > 2:
                             logging.info('log-likelihood increased for more'
                                          ' than two iteration')
-                            break
+                            # reset parameters with noise.
+                            H += np.random.uniform(0, 1, (N, K))
+                            H /= H.sum(axis=1)[:, None].repeat(K, axis=1)
+
+                            pi += np.random.uniform(0, 1, K)
+                            pi[:] /= pi.sum()
+
+                            B += np.random.uniform(-5, 5, (K, p))
+                            var[:] = np.random.uniform(0, 25, K)
+
+                            # reset counter
+                            bad_iterations = 0
                 else:
                     bad_iterations = 0
                     prev_llik = llik
