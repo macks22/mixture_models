@@ -11,8 +11,8 @@ import argparse
 
 import numpy as np
 from scipy import stats
-
-MODEL = {}
+from sklearn import preprocessing
+from sklearn import cluster
 
 
 def gen_data(t=4, M=10):
@@ -71,8 +71,41 @@ class RMix(object):
         self.coefficients = None          # K x p  (p unknown)
         self.memberships = None           # N x K  (N unknown)
 
-    def fit(self, X_mat, y_mat, niters=np.iinfo(np.int).max, epsilon=0.00001,
-            warmup=5):
+    def init_params(self, X_mat, ids, init='k-means++', max_iter=100):
+        """Initialize the parameters of the model using kmeans clustering on the
+        feature vectors X.
+        """
+        N, M, p = X_mat.shape
+        T = N * M
+        X = X_mat.reshape(T, p)
+
+        # centroids, codebook = \
+        #     cluster.vq.kmeans2(X, self.K, iter=100, minit='points')
+
+        kmeans = cluster.KMeans(self.K, init=init, max_iter=max_iter, n_init=1)
+        kmeans.fit(X)
+        centroids = kmeans.cluster_centers_
+        codebook = kmeans.labels_
+
+        self.coefficients = centroids
+        grouped = codebook[ids]
+
+        # Count number of observations assigned to each cluster for each user.
+        # Assign user memberships to proportion in each cluster.
+        self.memberships = np.apply_along_axis(
+            lambda row: np.bincount(row, minlength=self.K), 1, grouped) / 10.
+
+        # Then average over all these memberships to get the overall weights.
+        self.weight[:] = self.memberships.mean(axis=0)
+
+        # Find squared deviations for each predictor from the centroids of the
+        # model it was clustered into. Then find the variances by summing these
+        # over all the samples in each cluster.
+        sqsums = np.power(X - centroids[codebook], 2)
+        self.variance[:] = [sqsums[codebook == k].sum() for k in range(self.K)]
+
+    def fit(self, X_mat, y_mat, ids, niters=np.iinfo(np.int).max,
+            init_iters=50, epsilon=0.00001, warmup=5):
         """Fit the model to the given data.
 
         The Regression Mixture (RMix) model clusters users based on the
@@ -113,27 +146,33 @@ class RMix(object):
         y = y_mat.reshape(T)
 
         np.seterr(divide='raise')  # raise divide by 0 errors
-        eps = np.finfo(float).eps  # add to denominators which may go to 0
 
         # We allow minor fluctuation of log-likelihood for early stopping.
         # We track the number of iterations it has increased with a counter.
         # If this goes above 1, we terminate.
         bad_iterations = 0
 
-        # Init params.
-        B = np.ndarray((K, p))
-        var = np.ndarray(K)
-        pi = np.ndarray(K)
+        # Init params and set abbreviations for use in computations.
+        self.init_params(X_mat, ids, max_iter=init_iters)
+        B = self.coefficients
+        var = self.variance
+        pi = self.weight
+        H = self.memberships
 
-        # Randomly init the N * K posterior membership probs H_{n,k}.
-        H = np.random.uniform(0, 1, (N, K))
-        H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
+        # B = np.ndarray((K, p))
+        # var = np.ndarray(K)
+        # pi = np.ndarray(K)
 
-        # Set human-readable aliases for parameters.
-        self.memberships = H
-        self.coefficients = B
-        self.weight = pi
-        self.variance = var
+        # # Randomly init the N * K posterior membership probs H_{n,k}.
+        # H = np.random.uniform(0, 1, (N, K))
+        # H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
+        # pi[:] = H.mean(0)
+
+        # # Set human-readable aliases for parameters.
+        # self.memberships = H
+        # self.coefficients = B
+        # self.weight = pi
+        # self.variance = var
 
         # Initialize log-likelihood trackers.
         prev_llik = -np.inf  # set to lowest possible number
@@ -186,7 +225,7 @@ class RMix(object):
 
             # re-normalize the membership weights
             H[:] = np.exp(lliks + np.log(pi))
-            H /= H.sum(axis=1)[:, None].repeat(K, axis=1)
+            H[:] = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
 
             # Loop to step 2 until log-likelihood stabilizes.
             # Calculate expectation of complete data log-likelihood.
@@ -199,31 +238,28 @@ class RMix(object):
             # early stopping check if enabled (after iteration #5)
             if epsilon is not None and iteration >= warmup:
                 diff = llik - prev_llik
-                if diff == 0:  # done
+                # allow small reductions which could be due to rounding error
+                if diff < -0.01:
+                    bad_iterations += 1
+                    if bad_iterations > 2:
+                        logging.info('log-likelihood increased for more'
+                                     ' than two iterations')
+                        # np.random.seed(np.random.randint(0, 2^30))
+                        init_iters = max(1, init_iters - 10)
+                        self.init_params(X_mat, ids, init='random',
+                                         max_iter=init_iters)
+                        B = self.coefficients
+                        var = self.variance
+                        pi = self.weight
+                        H = self.memberships
+                        bad_iterations = 0
+                elif diff <= epsilon:  # and >= -0.01
                     logging.info('stopping threshold reached')
                     break
-                elif diff <= epsilon:
-                    # allow small reductions which could be due to rounding error
-                    if diff < -0.01:
-                        bad_iterations += 1
-                        if bad_iterations > 2:
-                            logging.info('log-likelihood increased for more'
-                                         ' than two iteration')
-                            # reset parameters with noise.
-                            H += np.random.uniform(0, 1, (N, K))
-                            H /= H.sum(axis=1)[:, None].repeat(K, axis=1)
-
-                            pi += np.random.uniform(0, 1, K)
-                            pi[:] /= pi.sum()
-
-                            B += np.random.uniform(-5, 5, (K, p))
-                            var[:] = np.random.uniform(0, 25, K)
-
-                            # reset counter
-                            bad_iterations = 0
-                else:
+                else:  # > epsilon
                     bad_iterations = 0
-                    prev_llik = llik
+
+            prev_llik = llik
 
     def cluster(self):
         """Hard clustering of users based on max of soft membership weights."""
@@ -278,9 +314,14 @@ if __name__ == "__main__":
 
     # X and y are (entity x time x predictors).
     X, y, ids = gen_data(args.ntraj, M)
-    _, p = X.shape
-    X_rw = X.reshape((N, M, p))  # rw = row-wise
-    y_rw = y.reshape((N, M))
+    T, p = X.shape
+
+    # scaler = preprocessing.StandardScaler()
+    # X_scaled = scaler.fit_transform(X)
+    # X_mat = X_scaled.reshape((N, M, p))  # rw = row-wise
+
+    X_mat = X.reshape((N, M, p))
+    y_mat = y.reshape((N, M))
 
     rmix = RMix(K)
-    rmix.fit(X_rw, y_rw, args.niters, args.epsilon)
+    rmix.fit(X_mat, y_mat, ids, niters=args.niters, epsilon=args.epsilon)
