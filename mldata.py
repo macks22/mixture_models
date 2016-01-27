@@ -6,6 +6,7 @@ quickly convert diverse datasets to appropriate formats for learning.
 import os
 import logging
 import argparse
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -49,6 +50,7 @@ class FeatureGuide(object):
     # We use slots here not so much for efficiency as for documentation.
     __slots__ = [field_name for field_name in sections]
     __slots__.append('fname')
+    __slots__.append('comments')
 
     @classmethod
     def parse_config(cls, fname):
@@ -56,8 +58,11 @@ class FeatureGuide(object):
         {field_letter: list_of_field_names_parsed}.
         """
         with open(fname) as f:
-            lines = [l.strip() for l in f.read().split('\n')
-                     if not l.startswith('#') and l.strip()]
+            lines = [l.strip() for l in f.read().split('\n') if l.strip()]
+
+        comments = [l.replace('#', '').strip()
+                    for l in lines if l.startswith('#')]
+        lines = [l for l in lines if not l.startswith('#')]
 
         # We use a simple state-machine approach to the parsing
         # in order to deal with multi-line sections.
@@ -80,32 +85,11 @@ class FeatureGuide(object):
         for k in keys:
             vars[k] = [val for val in vars[k] if val]  # already stripped
 
-        return vars
+        return comments, vars
 
-    def __init__(self, fname):
-        """Read the feature guide and parse out the specification.
-
-        The expected file format is the following:
-
-            t:<target>;
-            i:<single index field name, if one exists>;
-            k:<comma-separated fields that comprise a unique key>;
-            e:<comma-separated categorical entity names>;
-            c:<comma-separated categorical variable names>;
-            r:<comma-separated real-valued variable names>;
-
-        Whitespace is ignored, as are lines that start with a "#" symbol. Any
-        variables not included in one of the three groups is ignored. We assume
-        the first two categorical variables are the user and item ids.
-
-        Args:
-            fname (str): Path of the file containing the feature guide.
-
-        Stores instance variables for each of the field areas under the names in
-        FeatureGuide.config_guide.
-        """
-        self.fname = os.path.abspath(fname)
-        vars = self.parse_config(fname)
+    def restore(self):
+        """Parse the configuration and update instance variables to match."""
+        self.comments, vars = self.parse_config(self.fname)
 
         # Sanity checks.
         num_targets = len(vars['t'])
@@ -133,6 +117,31 @@ class FeatureGuide(object):
         # Extract target variable from its list and store solo.
         self.target = self.target[0]
 
+    def __init__(self, fname):
+        """Read the feature guide and parse out the specification.
+
+        The expected file format is the following:
+
+            t:<target>;
+            i:<single index field name, if one exists>;
+            k:<comma-separated fields that comprise a unique key>;
+            e:<comma-separated categorical entity names>;
+            c:<comma-separated categorical variable names>;
+            r:<comma-separated real-valued variable names>;
+
+        Whitespace is ignored, as are lines that start with a "#" symbol. Any
+        variables not included in one of the three groups is ignored. We assume
+        the first two categorical variables are the user and item ids.
+
+        Args:
+            fname (str): Path of the file containing the feature guide.
+
+        Stores instance variables for each of the field areas under the names in
+        FeatureGuide.config_guide.
+        """
+        self.fname = os.path.abspath(fname)
+        self.restore()
+
     def __repr__(self):
         return '%s("%s")' % (self.__class__.__name__, self.fname)
 
@@ -155,6 +164,35 @@ class FeatureGuide(object):
     @property
     def all_names(self):
         return self.feature_names + [self.target] + list(self.index)
+
+    def remove(self, name):
+        """Remove a feature from all sections of the guide where it appears.
+        This is disallowed for the target and features in the key.
+
+        Args:
+            name (str): The name of the feature to remove.
+        Raises:
+            AttributeError: if the name is in non-feature sections or the key.
+            KeyError: if the name is not in any sections.
+
+        """
+        if name in self.other_sections:
+            raise AttributeError('cannot remove feature from sections: %s' % (
+                ', '.join(self.other_sections)))
+        elif name in self.key:
+            raise AttributeError('cannot remove features in key')
+
+        # Check all other sections and remove from each where it appears.
+        removed = 0
+        for section in self.feature_sections:
+            try:
+                getattr(self, section).remove(name)
+                removed += 1
+            except KeyError:
+                pass
+
+        if not removed:
+            raise KeyError("feature '%s' not in feature guide" % name)
 
 
 """
@@ -211,19 +249,267 @@ class PandasDataset(Dataset):
         self.dataset = pd.read_csv(
             fname, usecols=fguide.all_names, index_col=index_col)
 
+        # Instance variables to store metadata generated during transformations.
+        self.column_maps = {}  # mapping from one space to another
+        self.imputations = {}  # imputing missing values
+        self.scalers = {}      # scaling column values
 
-def map_ids(data, key, id_map=None):
-    """Map ids to 0-contiguous index. This enables the use of these ids as
-    indices into an array (for the bias terms, for instance). This returns the
-    number of unique IDs for `key`.
-    """
-    if id_map is None:
-        ids = data[key].unique()
+    @property
+    def reals(self):
+        return self.dataset[list(self.fguide.real_valueds)]
+
+    @property
+    def categoricals(self):
+        return self.dataset[list(self.fguide.categoricals)]
+
+    @property
+    def entities(self):
+        return self.dataset[list(self.fguide.entities)]
+
+    @property
+    def key(self):
+        return self.dataset[list(self.fguide.key)]
+
+    def map_column_to_index(self, col):
+        """Map values in column to a 0-contiguous index. This enables use of
+        these attributes as indices into an array (for bias terms, for
+        instance). This method changes the ids in place, producing an (new_id,
+        orig_id) dict which is stored in the `column_maps` instance variable.
+
+        Args:
+            key (str): Column name with ids to map.
+        """
+        # First construct the map from original ids to new ones.
+        ids = self.dataset[col].unique()
         n = len(ids)
-        id_map = dict(zip(ids, range(n)))
+        idmap = dict(itertools.izip(ids, xrange(n)))
 
-    data[key] = data[key].apply(lambda _id: id_map[_id])
-    return id_map
+        # Next use the map to conver the ids in-place.
+        self.dataset[col] = self.dataset[col].apply(lambda _id: idmap[_id])
+
+        # Now swap key for value in the idmap to provide a way to convert back.
+        self.column_maps[col] = {val: key for key, val in idmap.iteritems()}
+
+    def remove_feature(self, name):
+        """Remove the given feature from the feature guide and then from the
+        dataset.
+
+        Args:
+            name (str): Name of the feature to remove.
+        Raises:
+            AttributeError: if the name is in non-feature sections or the key
+                section of the feature guide.
+            KeyError: if the name is not in feature guide or not in the dataset.
+        """
+        self.fguide.remove(name)
+        self.dataset = self.dataset.drop(name, axis=1)
+
+    def column_is_all_null(self, column):
+        return self.dataset[column].isnull().sum() == len(self.dataset)
+
+    def verify_columns_in_dataset(self, columns):
+        """Ensure all columns are present in the dataset before doing some
+        operation to avoid side effects or the need for rollback.
+        """
+        all_cols = self.dataset.columns
+        for col in columns:
+            if not col in all_cols:
+                raise KeyError("column '%s' not in dataset" % col)
+
+    def impute(self, columns, method='median', all_null='raise'):
+        """Perform missing value imputation for the given columns using the
+        specified `pandas.DataFrame` method for the fill value. All NaN values
+        in the columns will be replaced with this value.
+
+        Args:
+            columns (iterable of str): Column names to perform missing value
+                imputation on.
+            method (str): Name of the `pandas.DataFrame` method to use to
+                compute the fill value.
+            all_null (str): One of {'drop', 'raise', 'ignore'}, this defines the
+                action taken when a column with only missing values is
+                encountered. If drop, the entire column is dropped. If raise, a
+                ValueError is raised. If ignore, the column is ignored.
+        Raises:
+            KeyError: if any of the column names are not in the dataset.
+            ValueError: if 'raises is specified for `all_null` and an all null
+                column is encountered.
+
+        """
+        # Ensure all_null is one of the valid choices.
+        allowed = {'drop', 'raise', 'ignore'}
+        if all_null not in allowed:
+            raise ValueError(
+                'all_null must be one of: %s' % ', '.join(allowed))
+
+        self.verify_columns_in_dataset(columns)
+
+        # If all_null='raise', check all columns first to avoid side effects.
+        if all_null == 'raise':
+            for col in columns:
+                if self.column_is_all_null(col):
+                    raise ValueError("all null column '%s'" % col)
+
+        for col in columns:
+            if self.column_is_all_null(col):
+                if all_null == 'drop':
+                    self.remove_feature(col)
+                    logging.info("all null column '%s' was dropped" % col)
+                    continue
+                # Already checked all_null == 'raise'
+                else:
+                    logging.info("all null column '%s' ignored" % col)
+
+            # Compute fill value and fill all NaN values.
+            column = self.dataset[col]
+            fill_value = getattr(column, method)()
+            self.dataset[col] = column.fillna(fill_value)
+
+            # Store fill_value imputed.
+            self.imputations[col] = fill_value
+
+    def impute_reals(self):
+        self.impute(self.fguide.real_valueds)
+
+    def scale(self, columns):
+        """Z-score scale the given columns IN-PLACE, storing the scalers used in
+        the `scalers` instance variable. The scaling can be reversed using
+        `unscale`.
+
+        Args:
+            columns (iterable of str): Column names to scale.
+        Raises:
+            KeyError: if any of the column names are not in the dataset.
+
+        """
+        self.verify_columns_in_dataset(columns)
+
+        for col in columns:
+            # First ensure the column has not already been scaled.
+            if col in self.scalers:
+                scaler, scaled = self.scalers[col]
+            else:
+                scaler = preprocessing.StandardScaler()
+                scaled = False
+
+            if not scaled:
+                self.scalers[col] = (scaler, True)
+                self.dataset[col] = scaler.fit_transform(self.dataset[col])
+
+    def scale_reals(self):
+        if self.fguide.real_valueds:
+            self.scale(self.fguide.real_valueds)
+
+    def unscale(self, columns):
+        """Reverse the Z-score scaling on the given columns IN-PLACE. If any of
+        the given columns have not been scaled, they are ignored.
+
+        Args:
+            columns (iterable of str): Column names to unscale.
+        Raises:
+            KeyError: if any of the column names are not in the dataset.
+
+        """
+        self.verify_columns_in_dataset(columns)
+
+        for col in columns:
+            scaler, scaled = self.scalers.get(col, (0, 0))
+            if not scaled:
+                logging.info("column '%s' has not been scaled, ignoring" % col)
+                continue
+
+            self.dataset[col] = scaler.inverse_transform(self.dataset[col])
+            self.scalers[col][1] = False
+
+    # TODO: Incorporate preprocess as a method.
+    def preprocess(self, impute=True):
+        """Return preprocessed (X, y, eid) pairs for the train and test sets.
+
+        Preprocessing includes:
+
+        1.  Map all entity IDs to a 0-contiguous range.
+        2.  Z-score scale the real-valued features.
+        3.  One-hot encode the categorical features (including entity IDs).
+
+        This function tries to be as general as possible to accomodate learning by
+        many models. As such, there are a variety of return values:
+
+        1.  eids: entity IDs as a numpy ndarray
+        2.  X: feature vector matrix (first categorical, then real-valued)
+        3.  y: target values (unchanged from input)
+        4.  indices: The indices of each feature in the encoded X matrix.
+        5.  nents: The number of unique entities for each entity.
+
+        """
+        eids = {}
+        for entity in self.fguide.entities:
+            self.map_column_to_index(entity)
+            eids[entity] = self.dataset[entity].values
+
+        # Z-score scaling of real-valued features.
+        self.impute_reals()
+        self.scale_reals()
+        nreal = len(self.fguide.real_valueds)
+
+        # One-hot encoding of entity and categorical features.
+        cats_and_ents = list(self.fguide.entities | self.fguide.categoricals)
+        all_cats = self.dataset[cats_and_ents]
+        encoder = preprocessing.OneHotEncoder()
+        encoded_cats = encoder.fit_transform(all_cats)
+
+        # Create a feature map for decoding one-hot encoding.
+        ncats_and_ents = encoder.active_features_.shape[0]
+        nf = ncats_and_ents + nreal
+
+        # Count entities.
+        logging.info('after one-hot encoding, found # unique values:')
+        counts = np.array([
+            all_cats[cats_and_ents[i]].unique().shape[0]
+            for i in range(len(cats_and_ents))
+        ])
+
+        # Assemble map to new feature indices using counts.
+        indices = zip(cats_and_ents, np.cumsum(counts))
+        for attr, n_values in zip(self.fguide.entities, counts):
+            logging.info('%s: %d' % (attr, n_values))
+
+        # Add in real-valued feature indices.
+        last_cat_index = indices[-1][1]
+        indices += zip(self.fguide.real_valueds,
+                       range(last_cat_index + 1, nf + 1))
+
+        # How many entity and categorical features do we have now?
+        nents = dict(indices)[self.fguide.entities[-1]]
+        ncats = ncats_and_ents - nents
+        nf = ncats_and_ents + nreal
+
+        n_ent_names = len(self.fguide.entities)
+        ent_idx = range(n_ent_names)
+        cat_idx = range(n_ent_names, len(cats_and_ents))
+        nactive_ents = sum(encoder.n_values_[i] for i in ent_idx)
+        nactive_cats = sum(encoder.n_values_[i] for i in cat_idx)
+
+        logging.info('number of active entity features: %d of %d' % (
+            nents, nactive_ents))
+        logging.info('number of active categorical features: %d of %d' % (
+            ncats, nactive_cats))
+        logging.info('number of real-valued features: %d' % nreal)
+        logging.info('Total of %d features after encoding' % nf)
+
+        # Put all features together.
+        X = sp.sparse.hstack((encoded_cats, self.reals))\
+            if nreal else encoded_cats
+        y = self.dataset[self.fguide.target].values
+        return X, y, eids, indices, nents
+
+    # TODO: Take the code from scaffold.py and incorporate. This includes logic
+    # for splitting the train and test data. This logic is somewhat general --
+    # splitting a dataset based on a time attribute, so you can write it more
+    # generally in that line of thinking. You can make it even more general:
+    # splitting based on a binary comparison relationship with one of the
+    # columns. You could also have a method which builds on the simple split to
+    # perform sequential splits based on all unique values of a column, applying
+    # one comparison to get the train set and another to get the test set.
 
 
 def read_train_test(train_file, test_file, conf_file):
@@ -275,108 +561,6 @@ def read_train_test(train_file, test_file, conf_file):
         train.shape[0], test.shape[0]))
 
     return train, test, target, ents, cats, reals
-
-
-def preprocess(train, test, target, ents, cats, reals):
-    """Return preprocessed (X, y, eid) pairs for the train and test sets.
-
-    Preprocessing includes:
-
-    1.  Map primary entity ID (first in ents) to a 0-contiguous range.
-    2.  Z-score scale the real-valued features.
-    3.  One-hot encode the categorical features (including primary entity ID).
-
-    This function tries to be as general as possible to accomodate learning by
-    many models. As such, there are 8 return values. The first three are:
-
-    1.  train_eids: primary entity IDs as a numpy array
-    2.  train_X: training X values (first categorical, then real-valued)
-    3.  train_y: training y values (unchanged from input)
-
-    The next three values are the same except for the test set. The final two
-    values are:
-
-    7.  indices: The indices of each feature in the encoded X matrix.
-    8.  nents: The number of categorical features after one-hot encoding.
-
-    """
-
-    # Separate X, y for train/test data.
-    n_train = train.shape[0]
-    n_test = test.shape[0]
-    train_y = train[target].values
-    test_y = test[target].values
-
-    # Read out id lists for primary entity.
-    all_dat = pd.concat((train, test))
-    id_map = map_ids(all_dat, ents[0])
-
-    map_ids(train, ents[0], id_map)
-    map_ids(test, ents[0], id_map)
-    train_eids = train[ents[0]].values
-    test_eids = test[ents[0]].values
-
-    # Z-score scaling of real-valued features.
-    if reals:
-        scaler = preprocessing.StandardScaler()
-        train_reals = scaler.fit_transform(train[reals])
-        test_reals = scaler.transform(test[reals])
-
-    # One-hot encoding of entity and categorical features.
-    catf = ents + cats
-    all_cats = pd.concat((train[catf], test[catf]))
-    encoder = preprocessing.OneHotEncoder()
-    enc = encoder.fit_transform(all_cats)
-    train_cats = enc[:n_train]
-    test_cats = enc[n_train:]
-
-    # Create a feature map for decoding one-hot encoding.
-    ncats = encoder.active_features_.shape[0]
-    nreal = train_reals.shape[1] if reals else 0
-    nf = ncats + nreal
-
-    # Count entities.
-    logging.info('after one-hot encoding, found # unique values:')
-    counts = np.array([
-        all_cats[catf[i]].unique().shape[0]
-        for i in xrange(len(catf))
-    ])
-    indices = zip(catf, np.cumsum(counts))
-    for attr, n_values in zip(ents, counts):
-        logging.info('%s: %d' % (attr, n_values))
-
-    # Add in real-valued feature indices.
-    indices += zip(reals, range(indices[-1][1] + 1, nf + 1))
-
-    # How many entity features and categorical features do we have?
-    nents = dict(indices)[ents[-1]]
-    ncats = ncats - nents
-    nf = nents + ncats + nreal
-
-    ent_idx = range(len(ents))
-    cat_idx = range(len(ents), len(ents) + len(cats))
-    nactive_ents = sum(encoder.n_values_[i] for i in ent_idx)
-    nactive_cats = sum(encoder.n_values_[i] for i in cat_idx)
-
-    logging.info('number of active entity features: %d of %d' % (
-        nents, nactive_ents))
-    logging.info('number of active categorical features: %d of %d' % (
-        ncats, nactive_cats))
-    logging.info('number of real-valued features: %d' % nreal)
-
-    # Put all features together.
-    if reals:
-        train_X = sp.sparse.hstack((train_cats, train_reals))
-        test_X = sp.sparse.hstack((test_cats, test_reals))
-    else:
-        train_X = train_cats
-        test_X = test_cats
-
-    logging.info('Total of %d features after encoding' % nf)
-
-    return (train_eids, train_X, train_y,
-            test_eids, test_X, test_y,
-            indices, nents)
 
 
 class Model(object):
