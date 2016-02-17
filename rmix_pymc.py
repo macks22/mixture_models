@@ -10,85 +10,11 @@ import argparse
 
 import pymc3 as pm
 import numpy as np
-import pandas as pd
 import theano
 import theano.tensor as T
-import scipy as sp
 from scipy import stats
 
-
-def gen_data(nusers, nsamples, F, K):
-    """Generate hyperparameters, parameters, and data for the Personalized
-    Mixture of Gaussian Regressions model.
-
-    Args:
-        nusers (int): Number of distinct users.
-        nsamples (int): Total number of samples to generate.
-        F (int): Number of features for feature vectors.
-        K (int): Number of clusters.
-    Return:
-        data, params (tuple of dicts):
-            `data` contains X, y, and I.
-                X (nsamples x F): the feature vectors for each sample.
-                y (nsamples): the target variables for each sample.
-                I (nsamples): the user ID for each sample.
-            `params` contains pi, Z, beta, and W.
-                pi (K): component weights.
-                Z (nusers): categorical indicator variables for each user.
-                beta (K): precision parameters for each component.
-                W (K x F): regression coefficients for each component.
-    """
-
-    # Hyperparameters.
-    alpha = np.ones(K)
-    a0 = 1
-    b0 = 1
-    mu0 = np.zeros(F)
-    coeff_variances = np.ones(F)
-
-    # Parameters.
-    pi = np.random.dirichlet(alpha)
-    Z = np.random.multinomial(n=1, pvals=pi, size=nusers)
-    Z_as_cat = np.nonzero(Z)[1]  # the nonzero column is the assigned cluster
-    logging.info('assigned clusters: %s' % str(Z_as_cat))
-
-    beta = np.random.gamma(a0, b0, K)
-    sigma_sq = 1. / beta
-    W = stats.multivariate_normal.rvs(
-            mean=mu0, cov=np.diag(coeff_variances), size=K)
-
-    # Now generate samples according to which cluster the user belongs to.
-    I = np.ndarray((nsamples, 1), dtype=np.int32)
-    y = np.ndarray((nsamples,))
-
-    # Randomly generate features, uniform [0, 10] + standard gaussian noise
-    X = (np.random.uniform(1, 10, size=(nsamples, F))
-            + np.random.randn(nsamples, F))
-
-    # Randomly select user to sample observation for, for all samples.
-    pids = np.arange(nusers)
-    I[:nusers, 0] = pids  # make sure each user gets at least one observation
-    rem = nsamples - nusers
-
-    I[nusers:, 0] = np.random.choice(pids, replace=True, size=rem)
-    Z_idx = Z_as_cat[I[:, 0]]
-    Ws = W[Z_idx]
-    y[:] = (X * Ws).sum(1)
-
-    data = {
-        'X': X,
-        'y': y,
-        'I': I
-    }
-
-    params = {
-        'pi': pi,
-        'Z': Z_as_cat,
-        'beta': beta,
-        'W': W
-    }
-
-    return data, params
+from gendata import gen_prmix_data
 
 
 def make_parser():
@@ -136,7 +62,7 @@ if __name__ == "__main__":
     logging.info('number of clusters: %d' % K)
     logging.info('number of features: %d' % F)
 
-    data, params = gen_data(nusers, nsamples, F, K)
+    data, params = gen_prmix_data(nusers, nsamples, F, K)
     X = data['X']
     y = data['y']
     I = data['I']

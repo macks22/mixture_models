@@ -15,47 +15,7 @@ import cli
 from mixture import MixtureModel
 from component import MGLRComponent
 from distributions import AlphaGammaPrior
-
-
-def gen_data(l=4, n=10):
-    """Sample l trajectories, n observations each, from three clusters
-    (polynomials). Let the first column of X be all 1s for the global intercept,
-    the second column be the time of the observation in the trajectory, and the
-    third column be some independent feature.
-
-    Args:
-        l (int): number of trajectories per component
-        n (int): number of time steps per trajectory
-    """
-    f1 = lambda x: 120 + 4 * x
-    f2 = lambda x: 10 + 2 * x + 0.1 * x ** 2
-    f3 = lambda x: 250 - 0.75 * x
-
-    K = 3      # number of components
-    M = l * K  # total number of trajectories
-    N = M * n  # total number of observations
-
-    samples = np.zeros((M, n))
-    xs = np.random.normal(1.0, 1.0, (M, n))
-
-    for i, model in enumerate([f1, f2, f3]):
-        for traj in range(l):
-            idx = i * l + traj  # stride + step
-            for time in range(n):
-                samples[idx, time] = model(xs[idx, time])
-
-    X = np.zeros((N, 4))
-    y = np.zeros(N)
-    X[:, 0] = 1  # intercept term
-    idx = 0
-    for (traj, time), y_sample in np.ndenumerate(samples):
-        X[idx, 1] = time
-        X[idx, 2] = xs[traj, time]
-        X[idx, 3] = xs[traj, time] ** 2
-        y[idx] = y_sample
-        idx += 1
-
-    return X, y
+from gendata import gen_3cluster_mixture
 
 
 class PMLRTrace(object):
@@ -285,7 +245,7 @@ if __name__ == "__main__":
     # Each component corresponds to a polynomial.
     # We consider these to be "student learner profiles",
     # and generate l students from each profile.
-    X, y = gen_data(l, m)
+    X, y, I, ids = gen_3cluster_mixture(l, m)
     N, f = X.shape
 
     pmlr = PMLR()

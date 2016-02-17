@@ -11,59 +11,13 @@ import argparse
 
 import numpy as np
 from scipy import stats
-from sklearn import preprocessing
-from sklearn import cluster
+from sklearn import preprocessing, cluster
 
-
-def gen_data(t=4, M=10):
-    """Sample t trajectories, M observations each, from three clusters
-    (polynomials). Let the first column of X be all 1s for the global intercept,
-    the second column be the time of the observation in the trajectory, and the
-    third column be some independent feature.
-
-    Args:
-        N (int): number of trajectories per component
-        M (int): number of time steps per trajectory
-    """
-    f1 = lambda x: 120 + 4 * x
-    f2 = lambda x: 10 + 2 * x + 0.1 * x ** 2
-    f3 = lambda x: 250 - 0.75 * x
-
-    K = 3      # number of components
-    N = t * K  # total number of trajectories
-    O = N * M  # total number of observations
-
-    samples = np.zeros((N, M))
-    xs = np.random.normal(1.0, 1.0, (N, M))
-
-    I = np.zeros((O, 1))
-    I_idx = 0
-    for i, model in enumerate([f1, f2, f3]):
-        for traj in range(t):
-            idx = i * t + traj  # stride + step
-            for obs in range(M):
-                samples[idx, obs] = model(xs[idx, obs])
-                I[I_idx] = traj
-                I_idx += 1
-
-    X = np.zeros((O, 4))
-    y = np.zeros(O)
-    ids = np.arange(O).reshape(N, M)
-
-    X[:, 0] = 1  # intercept term
-    idx = 0
-    for (traj, obs), y_sample in np.ndenumerate(samples):
-        X[idx, 1] = obs
-        X[idx, 2] = xs[traj, obs]
-        X[idx, 3] = xs[traj, obs] ** 2
-        y[idx] = y_sample
-        idx += 1
-
-    return X, y, I, ids
+from gendata import gen_3cluster_mixture
 
 
 class RMix(object):
-    """Regression Mixture for Clustering Trajectories."""
+    """Regression Mixture for Clustering Trajectories, learned with EM."""
 
     def __init__(self, K):
         self.K = K
@@ -316,7 +270,7 @@ if __name__ == "__main__":
     M = args.M          # number of items
 
     # X and y are (entity x time x predictors).
-    X, y, ids = gen_data(args.ntraj, M)
+    X, y, ids = gen_3cluster_mixture(args.ntraj, M)
     T, p = X.shape
 
     # scaler = preprocessing.StandardScaler()
