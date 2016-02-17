@@ -36,11 +36,15 @@ def gen_data(t=4, M=10):
     samples = np.zeros((N, M))
     xs = np.random.normal(1.0, 1.0, (N, M))
 
+    I = np.zeros((O, 1))
+    I_idx = 0
     for i, model in enumerate([f1, f2, f3]):
         for traj in range(t):
             idx = i * t + traj  # stride + step
             for obs in range(M):
                 samples[idx, obs] = model(xs[idx, obs])
+                I[I_idx] = traj
+                I_idx += 1
 
     X = np.zeros((O, 4))
     y = np.zeros(O)
@@ -55,7 +59,7 @@ def gen_data(t=4, M=10):
         y[idx] = y_sample
         idx += 1
 
-    return X, y, ids
+    return X, y, I, ids
 
 
 class RMix(object):
@@ -104,7 +108,7 @@ class RMix(object):
         sqsums = np.power(X - centroids[codebook], 2)
         self.variance[:] = [sqsums[codebook == k].sum() for k in range(self.K)]
 
-    def fit(self, X_mat, y_mat, ids, niters=np.iinfo(np.int).max,
+    def fit(self, X_mat, y_mat, ids, niters=None,
             init_iters=50, epsilon=0.00001, warmup=5):
         """Fit the model to the given data.
 
@@ -159,21 +163,6 @@ class RMix(object):
         pi = self.weight
         H = self.memberships
 
-        # B = np.ndarray((K, p))
-        # var = np.ndarray(K)
-        # pi = np.ndarray(K)
-
-        # # Randomly init the N * K posterior membership probs H_{n,k}.
-        # H = np.random.uniform(0, 1, (N, K))
-        # H = H / H.sum(axis=1)[:, None].repeat(K, axis=1)
-        # pi[:] = H.mean(0)
-
-        # # Set human-readable aliases for parameters.
-        # self.memberships = H
-        # self.coefficients = B
-        # self.weight = pi
-        # self.variance = var
-
         # Initialize log-likelihood trackers.
         prev_llik = -np.inf  # set to lowest possible number
         llik = np.finfo(np.inf).min  # set to next lowest
@@ -183,6 +172,8 @@ class RMix(object):
         lliks = np.zeros((N, K))  # overwritten each iteration
 
         # Begin main training loop.
+        if niters is None:
+            niters = np.iinfo(np.int).max
         for iteration in xrange(niters):
 
             # Estimate B_k, \sigma_k^2, \pi_k from weighted least squares
@@ -202,6 +193,11 @@ class RMix(object):
                 p1 = np.linalg.inv(X_weighted.dot(X))
                 p2 = X_weighted.dot(y)
                 B[k] = p1.dot(p2)
+
+                # A = X_weighted.dot(X)
+                # b = X_weighted.dot(y)
+                # chol = sp.linalg.cho_factor(A, check_finite=False, lower=True)
+                # B[k] = sp.linalg.cho_solve(chol, b)
 
                 # calculate sigma_k^2
                 regress = X.dot(B[k])
@@ -268,9 +264,16 @@ class RMix(object):
     def log_likelihood(self):
         pass
 
-    def predict(self, X):
+    def predict(self, X_mat, ids):
         """Make predictions for a set of dyads using learned model."""
-        pass
+        N, M, p = X_mat.shape
+        X = X_mat.reshape(N * M)
+
+        # temporary, eventually need to actually compute from ids.
+        idx = np.repeat(np.arange(N), M)
+
+        y_hat = (X.dot(self.coefficients.T) * self.memberships[idx]).sum(1)
+        return y_hat.reshape(N, M)
 
 
 def make_parser():
@@ -282,8 +285,8 @@ def make_parser():
         help='max number of iterations to train for')
     parser.add_argument(
         '-e', '--epsilon',
-        type=float, default=None,
-        help='early stopping threshold for training; disabled by default')
+        type=float, default=0.000001,
+        help='early stopping threshold for training')
     parser.add_argument(
         '-t', '--ntraj', type=int, default=4,
         help='number of trajectories per component')
