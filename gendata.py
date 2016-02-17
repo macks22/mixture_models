@@ -2,6 +2,7 @@
 Synthetic data generation functions.
 
 """
+import logging
 import numpy as np
 
 
@@ -89,7 +90,7 @@ def gen_prmix_data(nusers, nsamples, F, K):
 
     beta = np.random.gamma(a0, b0, K)
     sigma_sq = 1. / beta
-    W = stats.multivariate_normal.rvs(
+    W = np.random.multivariate_normal(
             mean=mu0, cov=np.diag(coeff_variances), size=K)
 
     # Now generate samples according to which cluster the user belongs to.
@@ -108,7 +109,9 @@ def gen_prmix_data(nusers, nsamples, F, K):
     I[nusers:, 0] = np.random.choice(pids, replace=True, size=rem)
     Z_idx = Z_as_cat[I[:, 0]]
     Ws = W[Z_idx]
-    y[:] = (X * Ws).sum(1)
+    means = (X * Ws).sum(1)
+    sds = np.sqrt(sigma_sq[Z_idx])
+    y[:] = np.random.normal(means, sds)
 
     data = {
         'X': X,
@@ -120,6 +123,7 @@ def gen_prmix_data(nusers, nsamples, F, K):
         'pi': pi,
         'Z': Z_as_cat,
         'beta': beta,
+        'sigma': sigma_sq,
         'W': W
     }
 
