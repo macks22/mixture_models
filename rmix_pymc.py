@@ -99,7 +99,7 @@ def make_parser():
         type=int, default=4,
         help='number of users')
     parser.add_argument(
-        '-ns', '--nsamples',
+        '-nsg', '--nsamples-to-generate',
         type=int, default=20,
         help='number of samples')
     parser.add_argument(
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         format='[%(asctime)s]: %(message)s')
 
     nusers = args.nusers
-    nsamples = args.nsamples
+    nsamples = args.nsamples_to_generate
     K = args.nclusters
     F = args.nfeatures
     std = args.init_std
