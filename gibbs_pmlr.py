@@ -15,7 +15,7 @@ import cli
 from mixture import MixtureModel
 from component import MGLRComponent
 from distributions import AlphaGammaPrior
-from gendata import gen_3cluster_mixture
+from gendata import gen_prmix_data
 
 
 class PMLRTrace(object):
@@ -81,14 +81,13 @@ class PMLR(MixtureModel):
         sigma = np.r_[[stat[1] for stat in stats]]
         return W, sigma
 
-    def init_comps(self, X_rw, y_rw, init_method='kmeans', iters=100):
+    def init_comps(self, X, y, pids, init_method='kmeans', iters=100):
         """Initialize mixture components.
 
         Args:
-            X_rw (np.ndarray): Row-wise data matrix; has primary entity as rows,
-                secondary entity as columns, and feature vectors as third
-                dimension.
-            y_rw (np.ndarray): Observation vectors corresponding to X.
+            X (np.ndarray): Matrix with feature vector for each sample as rows.
+            y (np.ndarray): Observed target for each instance.
+            pids (np.ndarray): Primary entity ID for each instance.
             init_method (str): Method to use for initialization. One of:
                 'kmeans': initialize using k-means clustering with K clusters.
                 'random': randomly assign instances to components.
@@ -97,34 +96,33 @@ class PMLR(MixtureModel):
                 initialization if init_method is 'kmeans'.
         """
         self.validate_init_method(init_method)
-        return self._init_comps(X_rw, y_rw, init_method, iters)
+        return self._init_comps(X, y, pids, init_method, iters)
 
-    def _init_comps(self, X_rw, y_rw, init_method='kmeans', iters=100):
+    def _init_comps(self, X, y, pids, init_method='kmeans', iters=100):
         """Choose an initial assignment of instances to components using
         the specified init_method. This also initializes the component
         parameters based on the assigned data instances.
         """
-        n, m, f = X_rw.shape
-        N = n * m
-        X = X_rw.reshape(N, f)
-        y = y_rw.reshape(N)
+        N, f = X.shape
+        uniq_pids = np.unique(pids)  # array of unique primary entity ids
+        n_pe = len(uniq_pids)  # number of primary entities
         self.labels = np.arange(self.K)
 
         if init_method == 'random':
-            self.z = np.random.randint(0, self.K, n)
-            self.Z = np.repeat(self.z, m)
+            self.z = np.random.randint(0, self.K, n_pe)
+            self.Z = self.z[pids]
             self.comps = [MGLRComponent(X, y, self.Z == k) for k in self.labels]
         # Currently broken for this model.
         if init_method == 'kmeans':
             centroids, self.z = spvq.kmeans2(X, self.K, minit='points', iter=iters)
-            self.Z = np.repeat(self.z, m)
+            self.Z = self.z[pids]
             self.comps = [MGLRComponent(X, y, self.Z == k) for k in self.labels]
         elif init_method == 'em':
             pass
         elif init_method == 'load':
             pass
 
-    def fit(self, X, y, n, m, K, alpha=0.0, init_method='kmeans', iters=100,
+    def fit(self, X, y, I, K, alpha=0.0, init_method='kmeans', iters=100,
             nsamples=220, burnin=20, thin_step=2):
         """Fit the parameters of the model using the data X.
         See `init_comps` method for info on parameters not listed here.
@@ -133,8 +131,8 @@ class PMLR(MixtureModel):
             X (np.ndarray): Data matrix with primary entity as first index,
                 secondary entity as second index, and feature vectors as third.
             y (np.ndarray): Observation vector corresponding to X.
-            n (int): Number of unique students.
-            m (int): Number of courses per student.
+            I (np.ndarray): Entity ids for each observation; first column
+                corresponds to the primary entity (often users).
             K (int): Fixed number of components.
             alpha (float): Dirichlet hyper-parameter alpha; defaults to K.
             nsamples (int): Number of Gibbs samples to draw.
@@ -144,11 +142,12 @@ class PMLR(MixtureModel):
         self.K = K
         N, f = X.shape
 
-        # Reshape the data matrices into the tensor/matrix format.
-        X_rw = X.reshape((n, m, f))  # rw = row-wise
-        y_rw = y.reshape((n, m))
+        # TODO: update to use I instead of the row-wise X and y.
+        pids = I[:, 0].astype(np.int)  # primary entity ids
+        uniq_pids = np.unique(pids)  # array of unique primary entity ids
+        n_pe = len(uniq_pids)  # number of primary entities
 
-        self.init_comps(X_rw, y_rw, init_method, iters)
+        self.init_comps(X, y, pids, init_method, iters)
         self.alpha_prior = AlphaGammaPrior(alpha if alpha else float(K))
 
         self.nsamples = nsamples
@@ -164,27 +163,36 @@ class PMLR(MixtureModel):
         # We'll use this for our conditional multinomial probs.
         Pk = np.ndarray(K)
         probs = np.ndarray(K)
-        denom = float(n + alpha - 1)
+        denom = float(n_pe + alpha - 1)
 
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
         store = int(keeping / self.thin_step)
 
-        trace = PMLRTrace(store, n, f, K)
+        trace = PMLRTrace(store, n_pe, f, K)
         logging.info('initial log-likelihood: %.3f' % self.llikelihood())
 
+        # Construct masks for each user.
+        masks = [(pids == i).nonzero()[0] for i in range(n_pe)]
+
         # Run collapsed Gibbs sampling to fit the model.
-        indices = np.arange(n)
+        indices = np.arange(n_pe)
         for iternum in range(self.nsamples):
+            # Will we log this iteration?
             logging_iter = iternum % self.thin_step == 0
+
+            # If we're saving the sample, calculate trace index.
+            # We do not save samples discarded by chain burn in or thinning.
             saving_sample = logging_iter and (iternum >= self.burnin - 1)
             if saving_sample:
                 idx = (iternum - self.burnin) / self.thin_step
 
+            # Randomly permute the user IDs and iterate over the permutation.
             for i in np.random.permutation(indices):
-                _is = range(i * m, (i + 1) * m)
-                xs = X_rw[i]
-                ys = y_rw[i]
+                # Filter to observations for this user.
+                _is = masks[i]
+                xs = X[_is]
+                ys = y[_is]
 
                 # Remove X[i]'s stats from component z[i].
                 old_k = self.z[i]
@@ -217,6 +225,7 @@ class PMLR(MixtureModel):
                 if saving_sample:
                     trace.H_ik[idx, i] = Pk
 
+            # Log the likelihood and consider saving the sample in the trace.
             if logging_iter:
                 llik = self.llikelihood()
                 logging.info('sample %03d, log-likelihood: %.3f' % (iternum, llik))
@@ -232,25 +241,48 @@ class PMLR(MixtureModel):
         return 1.0  # TODO: implement
 
 
+def make_parser():
+    parser = argparse.ArgumentParser(
+        'Personalized Mixture of Gaussian Linear Regressions on synthetic data')
+    cli.add_gibbs_args(parser)
+    cli.add_mixture_args(parser)
+    parser.add_argument(
+        '-nu', '--nusers',
+        type=int, default=4,
+        help='number of users')
+    parser.add_argument(
+        '-nsg', '--nsamples-to-generate',
+        type=int, default=20,
+        help='number of samples')
+    parser.add_argument(
+        '-nf', '--nfeatures',
+        type=int, default=2,
+        help='number of features')
+    return parser
+
+
 if __name__ == "__main__":
-    args = cli.parse_args('Infer parameters for PMLR.')
+    parser = make_parser()
+    args = cli.parse_and_setup(parser)
 
-    l = 5   # number of students from each component.
-    m = 10  # courses per student
+    nusers = args.nusers
+    nsamples = args.nsamples_to_generate
+    K = args.K
+    F = args.nfeatures
 
-    K = 3      # number of components (fixed due to data gen method)
-    n = l * K  # total number of students generated
+    logging.info('number of users: %d' % nusers)
+    logging.info('number of samples: %d' % nsamples)
+    logging.info('number of clusters: %d' % K)
+    logging.info('number of features: %d' % F)
 
-    # X and y are (student x course x predictors).
-    # Each component corresponds to a polynomial.
-    # We consider these to be "student learner profiles",
-    # and generate l students from each profile.
-    X, y, I, ids = gen_3cluster_mixture(l, m)
-    N, f = X.shape
+    data, params = gen_prmix_data(nusers, nsamples, F, K)
+    X = data['X']
+    y = data['y']
+    I = data['I']
 
     pmlr = PMLR()
     trace = pmlr.fit(
-        X, y, n, m, K, init_method=args.init_method, nsamples=args.nsamples,
+        X, y, I, K, init_method=args.init_method, nsamples=args.nsamples,
         burnin=args.burnin, thin_step=args.thin_step)
 
     # Calculate expectations using Monte Carlo estimates.
