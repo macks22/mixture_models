@@ -126,7 +126,16 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
         #     raise ValueError('cov matrix must be symmetric')
 
         self._cov = cov
-        self._cholesky = sp.linalg.cholesky(cov)
+        try:
+            self._cholesky = sp.linalg.cholesky(cov)
+        except sp.linalg.LinAlgError:
+            # attempt to resolve positive semi-definite issues by setting
+            # non-pd minors to machine epsilon.
+            evals, evecs = np.linalg.eigh(cov)
+            evals[evals <= 0] = np.finfo(np.float32).eps
+            cov = evecs.dot(np.diag(evals)).dot(evecs.T)
+            self._cholesky = sp.linalg.cholesky(cov)
+
         self._sum_lndiag = np.log(np.diag(self._cholesky)).sum()
 
     @property
