@@ -6,7 +6,7 @@ import logging
 import argparse
 
 
-def data_gen_parser(parser):
+def add_data_gen_args(parser):
     """Add arguments specific to synthetic data generators."""
     parser.add_argument(
         '-spc', '--samples-per-comp',
@@ -14,7 +14,7 @@ def data_gen_parser(parser):
         help='number of data samples to generate from each component')
 
 
-def gibbs_parser(parser):
+def add_gibbs_args(parser):
     """Add arguments specific to gibbs samplers."""
     parser.add_argument(
         '-ns', '--nsamples',
@@ -32,10 +32,7 @@ def gibbs_parser(parser):
         help='step-size for thinning; default is 2, which means every other '
              'sample will be kept')
 
-
-def make_parser(description):
-    parser = argparse.ArgumentParser(
-        description=description)
+def add_mixture_args(parser):
     parser.add_argument(
         '-v', '--verbose',
         type=int, default=1,
@@ -48,13 +45,18 @@ def make_parser(description):
         '-K', type=int, default=2,
         help='initial guess for number of components')
 
-    data_gen_parser(parser)  # add synthetic data generation arguments
-    gibbs_parser(parser)     # add gibbs sampler arguments
+
+def make_parser(description):
+    parser = argparse.ArgumentParser(
+        description=description)
+
+    add_mixture_args(parser)   # add mixture modeling arguments
+    add_data_gen_args(parser)  # add synthetic data generation arguments
+    add_gibbs_args(parser)     # add gibbs sampler arguments
     return parser
 
 
-def parse_args(description):
-    parser = make_parser(description)
+def parse_and_setup(parser):
     args = parser.parse_args()
 
     # Setup logging.
@@ -65,3 +67,8 @@ def parse_args(description):
         format="[%(asctime)s]: %(message)s")
 
     return args
+
+
+def parse_args(description):
+    parser = make_parser(description)
+    return parse_and_setup(parser)

@@ -19,7 +19,7 @@ from gendata import gen_prmix_data
 
 
 class PMLRTrace(object):
-    __slots__ = ['ll', 'pi', 'W', 'sigma', 'H_ik']
+    __slots__ = ['ll', 'pi', 'W', 'sigma', 'H']
 
     def __init__(self, nsamples, n, f, K):
         """Initialize empty storage for Gibbs samples of each parameter.
@@ -37,17 +37,18 @@ class PMLRTrace(object):
         self.pi = np.zeros((nsamples, K))      # mixture weights
         self.W = np.zeros((nsamples, K, f))   # component reg coefficients
         self.sigma = np.zeros((nsamples, K))   # component reg variances
-        self.H_ik = np.zeros((nsamples, n, K)) # posterior mixture memberships
+        self.H = np.zeros((nsamples, n, K)) # posterior mixture memberships
 
     def expectation(self):
         return {
             'pi': self.pi.mean(0),
             'W': self.W.mean(0),
             'sigma': self.sigma.mean(0),
-            'H_ik': self.H_ik.mean(0)
+            'H': self.H.mean(0)
         }
 
 
+DEBUG = {}
 class PMLR(MixtureModel):
     """Profiling Mixture of Linear Regressions with GIG prior."""
 
@@ -80,6 +81,9 @@ class PMLR(MixtureModel):
         W = np.r_[[stat[0] for stat in stats]]
         sigma = np.r_[[stat[1] for stat in stats]]
         return W, sigma
+
+    def n_assigned(self):
+        return np.bincount(self.z)
 
     def init_comps(self, X, y, pids, init_method='kmeans', iters=100):
         """Initialize mixture components.
@@ -145,7 +149,7 @@ class PMLR(MixtureModel):
         # TODO: update to use I instead of the row-wise X and y.
         pids = I[:, 0].astype(np.int)  # primary entity ids
         uniq_pids = np.unique(pids)  # array of unique primary entity ids
-        n_pe = len(uniq_pids)  # number of primary entities
+        self.n_pe = n_pe = len(uniq_pids)  # number of primary entities
 
         self.init_comps(X, y, pids, init_method, iters)
         self.alpha_prior = AlphaGammaPrior(alpha if alpha else float(K))
@@ -204,7 +208,15 @@ class PMLR(MixtureModel):
 
                 # Calculate P(X[i] | X[-i], pi, mu, sigma)
                 for k, comp in enumerate(self.comps):
-                    comp.fit_pp(xs)
+                    try:
+                        comp.fit_pp(xs)
+                    except ValueError:
+                        DEBUG['comp'] = comp
+                        DEBUG['xs'] = xs
+                        DEBUG['mean'] = comp.pp.mean
+                        DEBUG['cov'] = comp.pp.cov
+                        raise
+
                     probs[k] = comp.pp.pdf(ys)
 
                 # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
@@ -223,7 +235,7 @@ class PMLR(MixtureModel):
                 # save posterior responsibility each component takes for
                 # explaining data instance i
                 if saving_sample:
-                    trace.H_ik[idx, i] = Pk
+                    trace.H[idx, i] = Pk
 
             # Log the likelihood and consider saving the sample in the trace.
             if logging_iter:
@@ -235,10 +247,36 @@ class PMLR(MixtureModel):
                     trace.W[idx], trace.sigma[idx] = self.posterior_rvs()
                     trace.ll[idx] = llik
 
+        self.Z = self.z[pids]
         return trace
 
+    def label_llikelihood(self):
+        """Calculate ln(P(z | alpha)), the marginal log-likelihood of the
+        component instance assignments.
+
+        Eq. (22) from Kamper's guide.
+        """
+        alpha = self.alpha
+        alpha_k = alpha / self.K
+
+        llik = spsp.gammaln(alpha) - spsp.gammaln(self.n_pe + alpha)
+        counts = self.n_assigned().astype(np.float) + alpha_k
+        llik += (spsp.gammaln(counts) - spsp.gammaln(alpha_k)).sum()
+        return llik
+
     def llikelihood(self):
-        return 1.0  # TODO: implement
+        """Calculate ln(P(X, z | alpha, pi, mu, Sigma)), the marginal
+        log-likelihood of the data and the component instance assignments given
+        the parameters and hyper-parameters.
+
+        This can be used as a convergence metric. We expect to see an
+        increase as sampling proceeds.
+
+        Eq. (29) from Kamper's guide.
+        """
+        llik = self.label_llikelihood()
+        llik += np.sum([comp.llikelihood() for comp in self])
+        return llik
 
 
 def make_parser():

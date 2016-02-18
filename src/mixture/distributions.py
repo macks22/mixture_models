@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import scipy as sp
 import scipy.stats as stats
@@ -125,16 +127,46 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
         # if not (cov.T == cov).all():
         #     raise ValueError('cov matrix must be symmetric')
 
-        self._cov = cov
         try:
             self._cholesky = sp.linalg.cholesky(cov)
-        except sp.linalg.LinAlgError:
-            # attempt to resolve positive semi-definite issues by setting
-            # non-pd minors to machine epsilon.
-            evals, evecs = np.linalg.eigh(cov)
-            evals[evals <= 0] = np.finfo(np.float32).eps
-            cov = evecs.dot(np.diag(evals)).dot(evecs.T)
-            self._cholesky = sp.linalg.cholesky(cov)
+        except sp.linalg.LinAlgError as err:
+            raise ValueError(str(err))
+        self._cov = cov
+
+        # Adjust covariance using I\eps to ensure positive definite.
+        # eps = np.finfo(np.float32).eps
+        # adjustment = np.eye(cov.shape[0])
+        # adj_cov = cov
+        # rate = 1
+
+        # while True:
+        #     # add geometric series with rate epsilon until positive
+        #     # semi-definite
+        #     try:
+        #         adj_cov += rate * adjustment
+        #         self._cholesky = sp.linalg.cholesky(adj_cov)
+        #         self._cov = adj_cov
+        #         break
+        #     except sp.linalg.LinAlgError:
+        #         rate += 1
+        #         print('cholesky replaced')
+
+        # try:
+        #     self._cholesky = sp.linalg.cholesky(adj_cov)
+        #     self._cov = adj_cov
+        # except sp.linalg.LinAlgError:
+        #     # attempt to resolve positive semi-definite issues by setting
+        #     # non-pd minors to machine epsilon.
+        #     evals, evecs = np.linalg.eigh(adj_cov)
+        #     evals[evals <= 0] = eps
+
+        #     # reconstruct
+        #     new_cov = evecs.dot(np.diag(evals)).dot(evecs.T)
+
+        #     # try again
+        #     self._cholesky = sp.linalg.cholesky(new_cov)
+        #     self._cov = new_cov
+        #     print('cholesky replaced')
 
         self._sum_lndiag = np.log(np.diag(self._cholesky)).sum()
 
@@ -146,7 +178,9 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
     def df(self, df):
         p = self.mean.shape[0]
         if df < p:
-            raise ValueError('degrees of freedom must be >= %d' % p)
+            # raise ValueError('degrees of freedom must be >= %d' % p)
+            # warnings.warn('degrees of freedom must be >= %d, setting equal' % p)
+            df = p
 
         self._df = df
         self._half_dfp = (df + p) / 2.
@@ -244,7 +278,7 @@ class GIG(object):
         self.a = float(a)  # shape
         self.b = float(b)  # rate
 
-        # Terms for Psi update invariant to data.
+        # Terms for Psi update that are invariant to data.
         self._Vinv = np.linalg.inv(V) if Vinv is None else Vinv
         self._b_cache = b + 0.5 * mu.dot(self._Vinv).dot(mu)
         self._sm = self._Vinv.dot(mu)
@@ -273,8 +307,10 @@ class GIG(object):
             obj (GIG): Update the instance variables of this object to be the
                 posteriors resulting from the conjugate updates.
         """
-        V = np.linalg.inv(self._Vinv + x_ssq)
-        Vinv = np.linalg.inv(V)
+        # V = np.linalg.inv(self._Vinv + x_ssq)
+        # Vinv = np.linalg.inv(V)
+        Vinv = self._Vinv + x_ssq
+        V = np.linalg.inv(Vinv)
         mu = V.dot(self._sm + xy)
 
         a = self.a + n * 0.5

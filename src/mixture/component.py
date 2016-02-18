@@ -13,7 +13,7 @@ from mixture import MixtureComponent, MixtureComponentCache
 
 
 class GaussianComponentCache(MixtureComponentCache):
-    slots = ['xbar', 'ssq', 'mu', 'kappa', 'nu', 'Psi', 'ppc', 'ppdf']
+    __slots__ = ['xbar', 'ssq', 'mu', 'kappa', 'nu', 'Psi', 'ppc', 'ppdf']
 
     def __init__(self, f):
         """Allocate space for cache variables based on number of features f."""
@@ -272,11 +272,11 @@ class MGLRComponent(MixtureComponent):
                 `default_prior`.
         """
         self._y = y
-        MixtureComponent.__init__(self, X, instances, prior)
+        super(MGLRComponent, self).__init__(X, instances, prior)
 
-        # This is set during fitting.
+        # This is set during fitting; populate with placeholder values for now.
         self.pp = multivariate_t(
-            self.prior.mu, self.prior.V, self.prior.V.shape[0] * 2)  # placeholder values
+            self.prior.mu, self.prior.V, self.prior.V.shape[0] * 2)
 
         # Fit params to the data.
         self.fit()
@@ -312,14 +312,20 @@ class MGLRComponent(MixtureComponent):
             return
 
         self._instances[_is] = True
-        if (self._last_i_removed == _is).all():
-            self._restore_from_cache()
+
+        # If _is is an index mask (rather than a boolean mask) and the masks are
+        # of unequal length, then __eq__ returns a bool.
+        equal = self._last_i_removed == _is
+        if not isinstance(equal, bool):
+            if equal.all():  # same dimension, all elements same?
+                self._restore_from_cache()
         else:
             self._cache_add_instances(_is)  # add to cached stats
             self.fit()
 
     @property
     def sigma(self):
+        # TODO: make sure this is the correct formula
         return self.posterior.a / self.posterior.b
 
     def mean(self, X):
@@ -362,10 +368,12 @@ class MGLRComponent(MixtureComponent):
         new_n = self.n - X.shape[0]
         if new_n == 0:
             self._x_ssq[:] = 0
-            self._y_ssq[:] = 0
+            self._y_ssq = 0
             self._xy[:] = 0
         else:
             self._x_ssq -= X.T.dot(X)
+            # TODO: diagnose and fix source of deviation in cache
+            assert(np.isclose(self._x_ssq, self.X.T.dot(self.X)).all())
             self._y_ssq -= y.dot(y)
             self._xy -= X.T.dot(y)
 
@@ -395,9 +403,9 @@ class MGLRComponent(MixtureComponent):
         """
         mean = X.dot(self.posterior.mu)  # n x 1
         df = self.posterior.a * 2
-        pp_cov = ((self.posterior.a / self.posterior.b)
-                  * np.eye(mean.shape[0])
-                  + X.dot(self.posterior.V).dot(X.T)) # n x n
+        pp_cov = ((self.posterior.b / self.posterior.a) *
+                  (np.eye(mean.shape[0])
+                  + X.dot(self.posterior.V).dot(X.T))) # n x n
 
         self.pp = multivariate_t(mean, pp_cov, df)
 
