@@ -13,7 +13,7 @@ import numpy as np
 from scipy import stats
 from sklearn import preprocessing, cluster
 
-from gendata import gen_3cluster_mixture
+from mixture import gendata
 
 
 class RMix(object):
@@ -270,7 +270,7 @@ if __name__ == "__main__":
     M = args.M          # number of items
 
     # X and y are (entity x time x predictors).
-    X, y, ids = gen_3cluster_mixture(args.ntraj, M)
+    X, y, I, ids = gendata.gen_3cluster_mixture(args.ntraj, M)
     T, p = X.shape
 
     # scaler = preprocessing.StandardScaler()

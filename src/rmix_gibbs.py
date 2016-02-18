@@ -12,7 +12,8 @@ import numpy as np
 import scipy as sp
 from scipy import stats
 
-from rmix_pymc import gen_data, make_parser
+from rmix_pymc import make_parser
+from mixture import gendata
 
 
 def make_gibbs_parser():
@@ -36,7 +37,7 @@ if __name__ == "__main__":
 
     # SETUP STAGE
     # =========================================================================
-    parser = make_parser()
+    parser = make_gibbs_parser()
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -44,17 +45,18 @@ if __name__ == "__main__":
         format='[%(asctime)s]: %(message)s')
 
     nusers = args.nusers
+    nsamples = args.nsamples
     gen_nsamples = args.nsamples_to_generate
     K = args.nclusters
     F = args.nfeatures
     std = args.init_std
 
     logging.info('number of users: %d' % nusers)
-    logging.info('number of samples: %d' % nsamples)
+    logging.info('number of samples: %d' % gen_nsamples)
     logging.info('number of clusters: %d' % K)
     logging.info('number of features: %d' % F)
 
-    data, params = gen_data(nusers, gen_nsamples, F, K)
+    data, params = gendata.gen_prmix_data(nusers, gen_nsamples, F, K)
     X = data['X']
     y = data['y']
     I = data['I']
@@ -78,7 +80,7 @@ if __name__ == "__main__":
     V = np.eye(F)       # MvNormal cov param
 
     # Set up space for posterior hyperparameters.
-    alpha_post = np.zeros((nsamples,))
+    alpha_post = np.zeros((nsamples, K))
     a0_post = np.ndarray((nsamples, K))
     b0_post = np.ndarray((nsamples, K))
     V_post = np.ndarray((nsamples, K, F, F))
@@ -98,8 +100,8 @@ if __name__ == "__main__":
 
     # Initialize parameters
     pi_post[0] = np.random.dirichlet(alpha)  # K-dimensional
-    Z_post[0] = np.random.multinomial(1, pi, n_pe)  # n_pe x K
-    Z_cat = Z.nonzero()[1]  # convert to categorical
+    Z_post[0] = np.random.multinomial(1, pi_post[0], n_pe)  # n_pe x K
+    Z_cat = Z_post[0].nonzero()[1]  # convert to categorical
     Z_idx = Z_cat[pids]
 
     sigma_post[0] = np.random.gamma(a0, b0, K)  # K-dimensional
@@ -113,7 +115,7 @@ if __name__ == "__main__":
     for i in range(1, nsamples + 1):
 
         # Draw alpha* | Z
-        alpha_post[i] = alpha + Z.sum(0)
+        alpha_post[i] = alpha + Z_post[i-1].sum(0)
 
         # Draw pi | alpha*
         pi_post[i] = np.random.dirichlet(alpha_post[i])

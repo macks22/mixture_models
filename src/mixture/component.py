@@ -8,7 +8,7 @@ import scipy.stats as stats
 import scipy.special as spsp
 import matplotlib.pyplot as plt
 
-from distributions import multivariate_t, GIG
+from distributions import multivariate_t, GIG, GIW
 from mixture import MixtureComponent, MixtureComponentCache
 
 

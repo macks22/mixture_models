@@ -11,11 +11,8 @@ import scipy.stats as stats
 import scipy.special as spsp
 import scipy.cluster.vq as spvq
 
-import cli
-from mixture import MixtureModel
-from component import MGLRComponent
-from distributions import AlphaGammaPrior
-from gendata import gen_prmix_data
+from mixture import cli, gendata
+from mixture import MixtureModel, MGLRComponent, AlphaGammaPrior
 
 
 class PMLRTrace(object):
@@ -313,7 +310,7 @@ if __name__ == "__main__":
     logging.info('number of clusters: %d' % K)
     logging.info('number of features: %d' % F)
 
-    data, params = gen_prmix_data(nusers, nsamples, F, K)
+    data, params = gendata.gen_prmix_data(nusers, nsamples, F, K)
     X = data['X']
     y = data['y']
     I = data['I']

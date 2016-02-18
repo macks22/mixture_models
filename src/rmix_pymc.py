@@ -14,7 +14,7 @@ import theano
 import theano.tensor as T
 from scipy import stats
 
-from gendata import gen_prmix_data
+from mixture import gendata
 
 
 def make_parser():
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     logging.info('number of clusters: %d' % K)
     logging.info('number of features: %d' % F)
 
-    data, params = gen_prmix_data(nusers, nsamples, F, K)
+    data, params = gendata.gen_prmix_data(nusers, nsamples, F, K)
     X = data['X']
     y = data['y']
     I = data['I']

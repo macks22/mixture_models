@@ -12,8 +12,7 @@ import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
 import gibbs_gmm
-from component import GaussianComponent
-from distributions import AlphaGammaPrior
+from mixture import GaussianComponent, AlphaGammaPrior
 
 
 class IGMMTrace(object):

@@ -12,9 +12,8 @@ import scipy.special as spsp
 import scipy.cluster.vq as spvq
 import matplotlib.pyplot as plt
 
-from cli import parse_args
-from mixture import MixtureModel
-from component import GaussianComponent
+from mixture.cli import parse_args
+from mixture import MixtureModel, GaussianComponent
 
 
 class GMMTrace(object):
