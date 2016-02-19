@@ -22,15 +22,20 @@ class MixtureModel(object):
 
     @classmethod
     def validate_init_method(cls, init_method):
+        """Validate an initialization method name.
+
+        Raises:
+            ValueError: If the method is not supported by the model.
+            NotImplementedError: If the method is supported but not implemented.
+        """
         if init_method not in cls._supported:
             raise ValueError(
                 '%s is not a supported init method; must be one of: %s' % (
-                    init_method, ', '.join(supported)))
+                    init_method, ', '.join(cls._supported)))
 
         if init_method in cls._not_implemented:
             raise NotImplementedError(
                 '%s initialization not yet implemented' % init_method)
-
 
     def __init__(self):
         self.comps = []  # mixture components
@@ -49,12 +54,7 @@ class MixtureModel(object):
 
     @property
     def nf(self):
-        compiter = iter(self)
-        try:
-            comp = compiter.next()
-            return comp.nf
-        except StopIteration:
-            return 0
+        return self.comps[0].nf if self.comps else 0
 
     def init_comps(self):
         raise NotImplementedError(
@@ -87,6 +87,10 @@ class MixtureModel(object):
 
 
 class MixtureComponentCache(object):
+    """Cache for posterior/posterior predictive params, and sufficient stats."""
+
+    def __init__(self, f):
+        pass
 
     def store(self, comp):
         raise NotImplementedError()
@@ -101,11 +105,13 @@ class MixtureComponent(object):
     cache_class = MixtureComponentCache
 
     def __init__(self, X, instances, prior=None):
-        # When adding/removing instances from the components during fitting,
-        # the same instance will often be added back immediately. We look for
-        # this case and avoid recomputing the sufficient stats, posterior, and
-        # posterior predictive. Initially the cache is empty. We cache before
-        # removing an instance.
+        """
+        When adding/removing instances from the components during fitting,
+        the same instance will often be added back immediately. We look for
+        this case and avoid recomputing the sufficient stats, posterior, and
+        posterior predictive by using a cache. Initially the cache is empty. We
+        cache before removing an instance.
+        """
         self._cache = self.cache_class(X.shape[1])
         self._last_i_removed = -1
 
