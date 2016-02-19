@@ -215,7 +215,13 @@ class PMLR(MixtureModel):
 
     def _sample_once(self, indices, masks, X, y, alpha_k, denom, probs, Pk,
                      trace, idx, saving_sample):
-        """Draw samples for a single iteration."""
+        """Draw samples for a single iteration, optionally storing in trace.
+
+        Raises:
+            sp.linalg.LinAlgError: if a posterior predictive covariance matrix
+                estimated during Z sampling becomes non-PSD (positive
+                semi-definite).
+        """
         # Randomly permute the user IDs and iterate over the permutation.
         for i in np.random.permutation(indices):
             # Filter to observations for this user.
@@ -234,21 +240,13 @@ class PMLR(MixtureModel):
             # Calculate P(X[i] | X[-i], pi, mu, sigma)
             for k, comp in enumerate(self.comps):
                 comp.fit_pp(xs)
-                # Let this bubble up.
-                # while True:
-                #     try:
-                #         comp.fit_pp(xs)
-                #         break
-                #     except sp.linalg.LinAlgError:
-                #         self.init_comps(X, y, pids, init_method, iters)
-
                 probs[k] = comp.pp.pdf(ys)
 
             # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
             Pk[:] = probs * weights
 
             # Normalize probabilities.
-            Pk = Pk / Pk.sum()
+            Pk[:] = Pk / Pk.sum()
 
             # Sample new component for X[i] using normalized probs.
             new_k = np.nonzero(np.random.multinomial(1, Pk))[0][0]

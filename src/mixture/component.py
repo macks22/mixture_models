@@ -400,6 +400,10 @@ class MGLRComponent(MixtureComponent):
     def fit_pp(self, X):
         """Posterior predictive parameter calculations.
         Eq. (20) from Banerjee's BLM: Gory Details.
+
+        Raises:
+            sp.linalg.LinAlgError: if the posterior predictive covariance matrix
+                is not positive definite.
         """
         mean = X.dot(self.posterior.mu)  # n x 1
         df = self.posterior.a * 2
