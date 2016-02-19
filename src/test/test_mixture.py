@@ -269,8 +269,26 @@ class TestMixtureComponent(unittest.TestCase):
             self.assertTrue((diff == removed).all())
 
     def test_add_instance_just_removed(self):
-        """Should restore from cache."""
-        pass
+        """Should restore from cache and avoid refitting."""
+        first5 = np.arange(self.X.shape[0])[:5]  # empty array
+        mask, comp = self.create_comp_with_instances(first5)
+
+        with mock.patch.object(
+                MixtureComponent, '_restore_from_cache', return_value=None) \
+                    as mock_restore_from_cache,\
+             mock.patch.object(
+                MixtureComponent, 'fit', return_value=None) \
+                    as mock_fit:
+
+            # Manually remove last i removed to set up test.
+            to_rm = 0
+            comp._last_i_removed = 0
+            comp._instances[to_rm] = False
+
+            # Add the instance and make sure cache reload triggered.
+            comp.add_instance(to_rm)
+            mock_restore_from_cache.assert_called_once_with()
+            self.assertEqual(mock_fit.call_count, 0)
 
 
 if __name__ == "__main__":
