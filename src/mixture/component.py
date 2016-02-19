@@ -271,7 +271,9 @@ class MGLRComponent(MixtureComponent):
             prior (GIG): Optional prior distribution; defaults to
                 `default_prior`.
         """
-        self._y = y
+        self._y = y  # bypass cache population in setter
+
+        # This sets X, prior and posterior, and populates the cache.
         super(MGLRComponent, self).__init__(X, instances, prior)
 
         # This is set during fitting; populate with placeholder values for now.
@@ -298,9 +300,9 @@ class MGLRComponent(MixtureComponent):
 
         self._cache_stats()
         self._last_i_removed = _is
-        self._instances[_is] = False  # remove instance
+        self._instances[_is] = False  # remove instances
         self._cache_rm_instances(_is)  # remove from cached stats
-        self.fit()  # handles empty component case
+        self.fit()  # can deal with empty component case
 
     def add_instances(self, _is):
         """Add more than one instance to this component.
@@ -371,11 +373,9 @@ class MGLRComponent(MixtureComponent):
             self._y_ssq = 0
             self._xy[:] = 0
         else:
-            self._x_ssq -= X.T.dot(X)
-            # TODO: diagnose and fix source of deviation in cache
-            assert(np.isclose(self._x_ssq, self.X.T.dot(self.X)).all())
-            self._y_ssq -= y.dot(y)
-            self._xy -= X.T.dot(y)
+            self._x_ssq = self._x_ssq - X.T.dot(X)
+            self._y_ssq = self._y_ssq - y.dot(y)
+            self._xy = self._xy - X.T.dot(y)
 
     def _cache_add_instance(self, i):
         """Add sufficient stats from this instance to cached stats."""

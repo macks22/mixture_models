@@ -115,7 +115,7 @@ class MixtureComponent(object):
         self._cache = self.cache_class(X.shape[1])
         self._last_i_removed = -1
 
-        self._instances = instances
+        self._instances = instances.copy()  # don't want to end up sharing
         self.X = X
         self.prior = self.default_prior() if prior is None else prior
         self.posterior = self.prior.copy()

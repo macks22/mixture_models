@@ -284,6 +284,13 @@ class GIG(object):
         self._sm = self._Vinv.dot(mu)
 
     @property
+    def param_names(self):
+        return ['mu', 'V', 'a', 'b']
+
+    def get_params(self):
+        return {name: getattr(self, name) for name in self.param_names}
+
+    @property
     def d(self):
         return self.mu.shape[0]
 
