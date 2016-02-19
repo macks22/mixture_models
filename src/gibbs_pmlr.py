@@ -169,6 +169,7 @@ class PMLR(MixtureModel):
         # Init trace vars for parameters.
         keeping = self.nsamples - self.burnin
         store = int(keeping / self.thin_step)
+        idx = -1  # initial trace index.
 
         trace = PMLRTrace(store, n_pe, f, K)
         logging.info('initial log-likelihood: %.3f' % self.llikelihood())
@@ -189,50 +190,15 @@ class PMLR(MixtureModel):
                 idx = (iternum - self.burnin) / self.thin_step
 
             # Randomly permute the user IDs and iterate over the permutation.
-            for i in np.random.permutation(indices):
-                # Filter to observations for this user.
-                _is = masks[i]
-                xs = X[_is]
-                ys = y[_is]
-
-                # Remove X[i]'s stats from component z[i].
-                old_k = self.z[i]
-                self.comps[old_k].rm_instances(_is)
-
-                # Calculate probability of instance belonging to each comp.
-                # Calculate P(z[i] = k | z[-i], alpha)
-                weights = (self.counts + alpha_k) / denom
-
-                # Calculate P(X[i] | X[-i], pi, mu, sigma)
-                for k, comp in enumerate(self.comps):
-                    try:
-                        comp.fit_pp(xs)
-                    except ValueError:
-                        DEBUG['comp'] = comp
-                        DEBUG['xs'] = xs
-                        DEBUG['mean'] = comp.pp.mean
-                        DEBUG['cov'] = comp.pp.cov
-                        raise
-
-                    probs[k] = comp.pp.pdf(ys)
-
-                # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
-                Pk[:] = probs * weights
-
-                # Normalize probabilities.
-                Pk = Pk / Pk.sum()
-
-                # Sample new component for X[i] using normalized probs.
-                new_k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
-
-                # Add X[i] to selected component. Sufficient stats are updated.
-                self.comps[new_k].add_instances(_is)
-                self.z[i] = new_k
-
-                # save posterior responsibility each component takes for
-                # explaining data instance i
-                if saving_sample:
-                    trace.H[idx, i] = Pk
+            while True:
+                try:
+                    self._sample_once(
+                        indices, masks, X, y, alpha_k, denom, probs, Pk,
+                        trace, idx, saving_sample)
+                    break
+                except sp.linalg.LinAlgError:  # pp cov became non-PSD
+                    self.init_comps(X, y, pids, init_method, iters)
+                    logging.info('pp cov became non-PSD; random restart')
 
             # Log the likelihood and consider saving the sample in the trace.
             if logging_iter:
@@ -246,6 +212,55 @@ class PMLR(MixtureModel):
 
         self.Z = self.z[pids]
         return trace
+
+    def _sample_once(self, indices, masks, X, y, alpha_k, denom, probs, Pk,
+                     trace, idx, saving_sample):
+        """Draw samples for a single iteration."""
+        # Randomly permute the user IDs and iterate over the permutation.
+        for i in np.random.permutation(indices):
+            # Filter to observations for this user.
+            _is = masks[i]
+            xs = X[_is]
+            ys = y[_is]
+
+            # Remove X[i]'s stats from component z[i].
+            old_k = self.z[i]
+            self.comps[old_k].rm_instances(_is)
+
+            # Calculate probability of instance belonging to each comp.
+            # Calculate P(z[i] = k | z[-i], alpha)
+            weights = (self.counts + alpha_k) / denom
+
+            # Calculate P(X[i] | X[-i], pi, mu, sigma)
+            for k, comp in enumerate(self.comps):
+                comp.fit_pp(xs)
+                # Let this bubble up.
+                # while True:
+                #     try:
+                #         comp.fit_pp(xs)
+                #         break
+                #     except sp.linalg.LinAlgError:
+                #         self.init_comps(X, y, pids, init_method, iters)
+
+                probs[k] = comp.pp.pdf(ys)
+
+            # Calculate P(z[i] = k | z[-i], X, alpha, pi, mu, Sigma)
+            Pk[:] = probs * weights
+
+            # Normalize probabilities.
+            Pk = Pk / Pk.sum()
+
+            # Sample new component for X[i] using normalized probs.
+            new_k = np.nonzero(np.random.multinomial(1, Pk))[0][0]
+
+            # Add X[i] to selected component. Sufficient stats are updated.
+            self.comps[new_k].add_instances(_is)
+            self.z[i] = new_k
+
+            # save posterior responsibility each component takes for
+            # explaining data instance i
+            if saving_sample:
+                trace.H[idx, i] = Pk
 
     def label_llikelihood(self):
         """Calculate ln(P(z | alpha)), the marginal log-likelihood of the

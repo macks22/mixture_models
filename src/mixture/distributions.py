@@ -118,6 +118,11 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
     @cov.setter
     def cov(self, cov):
+        """Validation and caching for covariance matrix before setting.
+
+        Raises:
+            sp.linalg.LinAlgError: if cov matrix is not positive definite.
+        """
         f = cov.shape[0]
         if self.mean.shape[0] != f:
             raise ValueError(
@@ -127,47 +132,13 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
         # if not (cov.T == cov).all():
         #     raise ValueError('cov matrix must be symmetric')
 
-        try:
-            self._cholesky = sp.linalg.cholesky(cov)
-        except sp.linalg.LinAlgError as err:
-            raise ValueError(str(err))
-        self._cov = cov
-
         # Adjust covariance using I\eps to ensure positive definite.
-        # eps = np.finfo(np.float32).eps
-        # adjustment = np.eye(cov.shape[0])
-        # adj_cov = cov
-        # rate = 1
+        eps = np.finfo(np.float32).eps
+        adjustment = np.eye(cov.shape[0])
 
-        # while True:
-        #     # add geometric series with rate epsilon until positive
-        #     # semi-definite
-        #     try:
-        #         adj_cov += rate * adjustment
-        #         self._cholesky = sp.linalg.cholesky(adj_cov)
-        #         self._cov = adj_cov
-        #         break
-        #     except sp.linalg.LinAlgError:
-        #         rate += 1
-        #         print('cholesky replaced')
-
-        # try:
-        #     self._cholesky = sp.linalg.cholesky(adj_cov)
-        #     self._cov = adj_cov
-        # except sp.linalg.LinAlgError:
-        #     # attempt to resolve positive semi-definite issues by setting
-        #     # non-pd minors to machine epsilon.
-        #     evals, evecs = np.linalg.eigh(adj_cov)
-        #     evals[evals <= 0] = eps
-
-        #     # reconstruct
-        #     new_cov = evecs.dot(np.diag(evals)).dot(evecs.T)
-
-        #     # try again
-        #     self._cholesky = sp.linalg.cholesky(new_cov)
-        #     self._cov = new_cov
-        #     print('cholesky replaced')
-
+        # Cache cholesky decomposition for later use.
+        self._cholesky = sp.linalg.cholesky(cov + adjustment)
+        self._cov = cov
         self._sum_lndiag = np.log(np.diag(self._cholesky)).sum()
 
     @property
