@@ -1,5 +1,6 @@
 """
-Gibbs sampler for the PMLR (Profiling Mixture of Linear Regressions) model.
+Gibbs sampler for the PMLR (Profiling Mixture of Linear Regressions) model
+without bias terms.
 
 """
 import logging
@@ -25,7 +26,7 @@ class PMLRTrace(object):
 
         Args:
             nsamples (int): Number of Gibbs samples to store for each parameter.
-            n (int): Number of data instances being learned on.
+            n (int): Number of unique primary entities.
             f (int): Number features the model is being learned on.
             K (int): Number of clusters.
 
@@ -37,15 +38,9 @@ class PMLRTrace(object):
         self.H = np.zeros((nsamples, n, K)) # posterior mixture memberships
 
     def expectation(self):
-        return {
-            'pi': self.pi.mean(0),
-            'W': self.W.mean(0),
-            'sigma': self.sigma.mean(0),
-            'H': self.H.mean(0)
-        }
+        return {name: getattr(self, name).mean(0) for name in self.__slots__}
 
 
-DEBUG = {}
 class PMLR(MixtureModel):
     """Profiling Mixture of Linear Regressions with GIG prior."""
 
@@ -64,6 +59,10 @@ class PMLR(MixtureModel):
     @property
     def alpha(self):
         return None if self.alpha_prior is None else self.alpha_prior.alpha
+
+    @property
+    def alpha_k(self):
+        return self.alpha / self.K
 
     @property
     def W(self):
