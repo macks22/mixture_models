@@ -118,7 +118,6 @@ def gen_prmix_data(nusers, nsamples, F, K):
         'y': y,
         'I': I
     }
-
     params = {
         'pi': pi,
         'Z': Z_as_cat,
@@ -126,5 +125,44 @@ def gen_prmix_data(nusers, nsamples, F, K):
         'sigma': sigma_sq,
         'W': W
     }
+    return data, params
+
+
+def gen_pmixor_data(nents_list, nsamples, F, K):
+    nents = len(nents_list)
+    nusers = nents_list[0]
+    data, params = gen_prmix_data(nusers, nsamples, F, K)
+
+    # Generate random bias terms and add on to y.
+    # Use standard deviation equivalent to spread of targets.
+    y = data['y']
+    stds = np.repeat(y.std(), nents)
+
+    # Draw one bias term per unique entity.
+    biases = [np.random.normal(0, std, n) for std, n in zip(stds, nents_list)]
+
+    # Now sample the biases so we assign one of each type for each instance.
+    # The primary entities are already assigned.
+    I_before = data['I']
+    n = I_before.shape[0]
+    I = np.ndarray((n, nents), dtype=np.int)
+    I[:, 0] = I_before[:, 0]
+    for i, count in enumerate(nents_list[1:]):
+        col = i + 1
+        ids = np.arange(count)
+        I[:count, col] = ids
+        remaining = max(0, n - count)
+        I[count:, col] = np.random.choice(ids, replace=True, size=remaining)
+
+    data['I'] = I
+
+    # Now we have all bias terms assigned to instances, let's add on the biases
+    # to the y values.
+    data['y'] = y + np.sum([biases[i][I[:, i]] for i in range(nents)], 0)
+
+    # Add the biases to the params dict.
+    for i, bias_arr in enumerate(biases):
+        params['b%d' % i] = bias_arr
 
     return data, params
+
