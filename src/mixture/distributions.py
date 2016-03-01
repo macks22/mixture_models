@@ -266,7 +266,7 @@ class GIG(object):
         return self.mu.shape[0]
 
     def rvs(self):
-        var = stats.invgamma.rvs(self.a, self.b)
+        var = stats.invgamma.rvs(self.a, scale=self.b)
         mu = stats.multivariate_normal.rvs(self.mu, var * self.V)
         return mu, var
 
