@@ -285,8 +285,6 @@ class GIG(object):
             obj (GIG): Update the instance variables of this object to be the
                 posteriors resulting from the conjugate updates.
         """
-        # V = np.linalg.inv(self._Vinv + x_ssq)
-        # Vinv = np.linalg.inv(V)
         Vinv = self._Vinv + x_ssq
         V = np.linalg.inv(Vinv)
         mu = V.dot(self._sm + xy)

@@ -435,3 +435,4 @@ class MGLRComponent(MixtureComponent):
         residuals = self.y - reg
         return (self.n * np.log(2 * np.pi * sigma)
                 + (1 / sigma) * residuals.dot(residuals)) * -0.5
+
