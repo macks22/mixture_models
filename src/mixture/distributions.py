@@ -267,7 +267,9 @@ class GIG(object):
 
     def rvs(self):
         var = stats.invgamma.rvs(self.a, scale=self.b)
-        mu = stats.multivariate_normal.rvs(self.mu, var * self.V)
+        cov = var * self.V
+        cov[cov < 0] = 0  # adjust for oddities in sampling
+        mu = stats.multivariate_normal.rvs(self.mu, cov)
         return mu, var
 
     def copy(self):
