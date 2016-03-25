@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 
 from distributions import multivariate_t, GIG, GIW
 from mixture import MixtureComponent, MixtureComponentCache
+import ccomp
 
 
 class GaussianComponentCache(MixtureComponentCache):
@@ -131,9 +132,10 @@ class GaussianComponent(MixtureComponent):
 
     def _populate_cache(self):
         """Cache stats used during fitting."""
-        self._xbar = self.X.mean(0) if self.n \
+        X = self.X
+        self._xbar = X.mean(0) if self.n \
                 else np.zeros(self.nf) # sample mean
-        self._ssq = self.X.T.dot(self.X) # sample sum of squares
+        self._ssq = X.T.dot(X) # sample sum of squares
 
     def _cache_rm_instance(self, i):
         """Remove sufficient stats from sample mean & sum of squares."""
@@ -345,9 +347,10 @@ class MGLRComponent(MixtureComponent):
 
     def _populate_cache(self):
         """Cache stats used during fitting."""
-        self._x_ssq = self.X.T.dot(self.X)  # sample X sum of squares
+        X = self.X
+        self._x_ssq = X.T.dot(X)  # sample X sum of squares
         self._y_ssq = self.y.dot(self.y)    # sample y sum of squares
-        self._xy = self.X.T.dot(self.y)  # matrix multiplication of X^T y
+        self._xy = X.T.dot(self.y)  # matrix multiplication of X^T y
 
     def _cache_rm_instance(self, i):
         """Remove sufficient stats from sample mean & sum of squares."""
@@ -405,13 +408,12 @@ class MGLRComponent(MixtureComponent):
             sp.linalg.LinAlgError: if the posterior predictive covariance matrix
                 is not positive definite.
         """
-        mean = X.dot(self.posterior.mu)  # n x 1
-        df = self.posterior.a * 2
-        pp_cov = ((self.posterior.b / self.posterior.a) *
-                  (np.eye(mean.shape[0])
-                  + X.dot(self.posterior.V).dot(X.T))) # n x n
-
-        self.pp = multivariate_t(mean, pp_cov, df)
+        # Instead of creating a new object, reuse the current one.
+        # This is an optimization that replaces the __init__.
+        # self.pp = multivariate_t(mean, pp_cov, df)
+        self.pp._mean, self.pp.cov, self.pp.df = ccomp.mglr_fit_pp(
+            X, self.posterior.V, self.posterior.b, self.posterior.a,
+            self.posterior.mu)
 
     def fit(self):
         self.fit_posterior()
@@ -430,9 +432,13 @@ class MGLRComponent(MixtureComponent):
 
         Eq. (4) from Banerjee's BLM: Gory Details.
         """
+        # Optimizations
+        X = self.X
+        n = X.shape[0]
+
         sigma = self.sigma
-        reg = self.X.dot(self.posterior.mu)
+        reg = X.dot(self.posterior.mu)
         residuals = self.y - reg
-        return (self.n * np.log(2 * np.pi * sigma)
+        return (n * np.log(2 * np.pi * sigma)
                 + (1 / sigma) * residuals.dot(residuals)) * -0.5
 

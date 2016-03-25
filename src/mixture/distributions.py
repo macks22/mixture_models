@@ -1,9 +1,12 @@
-import warnings
+# encoding: utf-8
+# cython: profile=True
 
 import numpy as np
 import scipy as sp
 import scipy.stats as stats
 import scipy.special as spsp
+
+import cdist
 
 
 class multivariate_t_gen(stats._multivariate.multi_rv_generic):
@@ -93,11 +96,12 @@ multivariate_t = multivariate_t_gen()
 
 class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
+    _dist = multivariate_t
+
     def __init__(self, mean, cov, df):
         self._mean = np.array(mean)
         self.cov = cov
         self.df = df
-        self._dist = multivariate_t
 
     @property
     def mean(self):
@@ -123,23 +127,8 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
         Raises:
             sp.linalg.LinAlgError: if cov matrix is not positive definite.
         """
-        f = cov.shape[0]
-        if self.mean.shape[0] != f:
-            raise ValueError(
-                'incompatible shape: mean.shape[0] != cov.shape[0] '
-                '(%d != %d)' % (self.mean.shape[0], f))
-
-        # if not (cov.T == cov).all():
-        #     raise ValueError('cov matrix must be symmetric')
-
-        # Adjust covariance using I\eps to ensure positive definite.
-        eps = np.finfo(np.float32).eps
-        adjustment = np.eye(cov.shape[0])
-
-        # Cache cholesky decomposition for later use.
-        self._cholesky = sp.linalg.cholesky(cov + adjustment)
+        self._cholesky, self._sum_lndiag = cdist.set_cov(self.mean, cov)
         self._cov = cov
-        self._sum_lndiag = np.log(np.diag(self._cholesky)).sum()
 
     @property
     def df(self):
@@ -147,17 +136,8 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
 
     @df.setter
     def df(self, df):
-        p = self.mean.shape[0]
-        if df < p:
-            # raise ValueError('degrees of freedom must be >= %d' % p)
-            # warnings.warn('degrees of freedom must be >= %d, setting equal' % p)
-            df = p
-
+        self._half_dfp, self._df_terms = cdist.set_df(self.mean, df)
         self._df = df
-        self._half_dfp = (df + p) / 2.
-        self._df_terms = (spsp.gammaln(self._half_dfp)
-                          - spsp.gammaln(df / 2.)
-                          - (p / 2.) * np.log(np.pi * df))
 
     def pdf(self, x):
         return np.exp(self.logpdf(x))
@@ -165,15 +145,9 @@ class multivariate_t_frozen(stats._multivariate.multi_rv_frozen):
     def logpdf(self, x):
         """Multivariate Students-t log probability density function.
         """
-        if self.df == 0 or np.isinf(self.df):
-            return stats.multivariate_normal.logpdf(x, self.mean, self.cov)
-
-        sols = sp.linalg.solve(self._cholesky, x - self.mean)
-        rss = (sols ** 2).sum()
-
-        return (self._df_terms
-                - self._sum_lndiag
-                - self._half_dfp * np.log1p(rss / self.df))
+        return cdist.mvt_logpdf(
+            x, self.mean, self.cov, self._cholesky, self._sum_lndiag, self.df,
+            self._df_terms, self._half_dfp)
 
     def rvs(self, size):
         return self._dist.rvs(self.mean, self.cov, self.df, size)
