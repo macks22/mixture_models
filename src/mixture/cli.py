@@ -42,7 +42,8 @@ def add_mixture_args(parser):
         choices=('kmeans', 'random', 'load'), default='kmeans',
         help='initialization method for gmm; defaults to kmeans')
     parser.add_argument(
-        '-K', type=int, default=2,
+        '-K', '--nclusters',
+        type=int, default=2,
         help='initial guess for number of components')
 
 
