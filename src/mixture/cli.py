@@ -65,8 +65,8 @@ def parse_and_setup(parser):
         level=(logging.DEBUG if args.verbose == 2 else
                logging.INFO if args.verbose == 1 else
                logging.ERROR),
-        format="[%(asctime)s]: %(message)s")
-
+        format="[%(asctime)s][%(levelname)s][%(processName)s][%(process)d]:"
+               " %(message)s")
     return args
 
 
