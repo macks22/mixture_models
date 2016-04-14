@@ -240,6 +240,11 @@ class GIG(object):
         return self.mu.shape[0]
 
     def rvs(self):
+        """
+        Raises:
+            ValueError: when there is a domain error in invgamma.rvs args
+            LinAlgError: when multivariate_normal.rvs SVD call fails to converge
+        """
         var = stats.invgamma.rvs(self.a, scale=self.b)
         cov = var * self.V
         cov[cov < 0] = 0  # adjust for oddities in sampling
