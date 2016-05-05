@@ -8,7 +8,7 @@ import scipy.stats as stats
 import scipy.special as spsp
 import matplotlib.pyplot as plt
 
-from distributions import multivariate_t, GIG, GIW
+from distributions import multivariate_t, GIG, GIW, NormalGamma
 from mixture import MixtureComponent, MixtureComponentCache
 import ccomp
 
@@ -442,3 +442,55 @@ class MGLRComponent(MixtureComponent):
         return (n * np.log(2 * np.pi * sigma)
                 + (1 / sigma) * residuals.dot(residuals)) * -0.5
 
+
+class NormalBiasVector(object):
+
+    def __init__(self, biases, prior=None):
+        """
+        Args:
+            samples (np.ndarray): bias samples for init
+            prior (object): optional prior to override default.
+        """
+        self._n = biases.shape[0]
+        self.biases = biases
+
+        # Set prior to given value or uninformative normal-gamma.
+        self.prior = NormalGamma.uninformative() if prior is None else prior
+
+        # Fit initial posterior.
+        self.posterior = self.prior.copy()
+        self.fit()
+
+    def __repr__(self):
+        return "NormalBiasVector(biases={}, prior={})".format(self.biases, self.prior)
+
+    def __str__(self):
+        return self.__repr__()
+
+    def __getitem__(self, idx):
+        return self.biases[idx]
+
+    def __setitem__(self, idx, value):
+        self.biases[idx] = value
+
+    def rvs(self):
+        mu, precision = self.posterior.rvs()
+        std = np.sqrt(1. / precision)
+        n = self.biases.shape[0]
+        return stats.norm.rvs(loc=mu, scale=std, size=n)
+
+    def sufficient_stats(self):
+        n = self.biases.shape[0]
+        xbar = np.nanmean(self.biases)
+        ssqd = n * np.nanvar(self.biases)
+        return n, xbar, ssqd
+
+    def fit_posterior(self):
+        """Update posterior using conjugate hyperparameter updates from observed bias
+        terms.
+        """
+        args = tuple(list(self.sufficient_stats()) + [self.posterior])
+        self.prior.conjugate_updates(*args)
+
+    def fit(self):
+        self.fit_posterior()
