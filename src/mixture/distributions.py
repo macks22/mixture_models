@@ -347,8 +347,7 @@ class NormalGamma(object):
     def uninformative():
         """Return a new instance with uninformative parameters."""
         shape = rate = 0.001
-        scale = 1 / rate
-        return NormalGamma(0., 1., shape, scale)
+        return NormalGamma(0., 1., shape, rate)
 
     @property
     def param_names(self):
@@ -413,3 +412,90 @@ class NormalGamma(object):
                " mean mu=%.3f and sum of squared deviations 2*beta=%.3f" % (
                        self.kappa, self.mu, 2 * self.alpha, self.mu, 2 * self.beta)
 
+
+class TruncNormalGamma(NormalGamma):
+    """Truncated normal-gamma prior; conjugate to the normal prior with unknown mean & precision."""
+
+    __slots__ = ('mu', 'kappa', 'alpha', 'beta', 'bounds')
+
+    def __init__(self, mu, kappa, alpha, beta, bounds):
+        self.bounds = bounds
+        super(TruncNormalGamma, self).__init__(mu, kappa, alpha, beta)
+
+    def __repr__(self):
+        return "TruncNormalGamma(%f, %f, %f, %f, bounds=%s)" % (
+                    self.mu, self.kappa, self.alpha, self.beta, str(self.bounds))
+
+    @staticmethod
+    def uninformative():
+        """Return a new instance with uninformative parameters."""
+        shape = rate = 0.001
+        return TruncNormalGamma(0., 1., shape, rate, self.bounds)
+
+    @property
+    def param_names(self):
+        return ('mu', 'kappa', 'alpha', 'beta', 'bounds')
+
+    def get_params(self):
+        return {name: getattr(self, name) for name in self.param_names}
+
+    def copy(self):
+        return self.__class__(self.mu, self.kappa, self.alpha, self.beta, self.bounds)
+
+    def conjugate_updates(self, n, xbar, ssqd, posterior=None):
+        """Perform conjugate updating, returning a new NormalGamma distribution with the
+        updated parameters.
+
+        Args:
+            n (int): number of observations
+            xbar (float): sample mean
+            ssqd (float): sum of squared deviations from the sample mean
+        """
+        kappa = self.kappa + n
+        alpha = self.alpha + 0.5 * n
+        mu = (self.kappa * self.mu + n * xbar) / kappa
+        beta = (self.beta
+                + (0.5 * ssqd)
+                + ((n * self.kappa) / kappa) * 0.5 * (xbar - self.mu) ** 2)
+
+        # Either create new object or replace parameters on given object.
+        return self.__class__(mu, kappa, alpha, beta, self.bounds) if posterior is None else \
+               self.__class__.__init__(posterior, mu, kappa, alpha, beta, self.bounds)
+
+    def rvs(self, n=1):
+        """Note that scipy uses the shape, scale parameterization, so we must convert our
+        beta, which is the rate, to the scale.
+        """
+        if n <= 0:
+            raise ValueError("sample size must be >= 1")
+
+        shape = self.alpha
+        scale = 1. / self.beta
+
+        if n == 1:
+            precision = 0
+            while precision <= 0:
+                precision = stats.gamma.rvs(shape, scale=scale)
+        else:
+            precision = np.zeros(n)
+            while precision[precision <= 0].any():
+                precision = stats.gamma.rvs(shape, scale=scale, size=n)
+
+        mean_std = np.sqrt(1. / (self.kappa * precision))
+        lo, hi = self.bounds
+        lo_ = (lo - self.mu) / mean_std
+        hi_ = (hi - self.mu) / mean_std
+        if n == 1:
+            mean = stats.truncnorm.rvs(lo_, hi_, loc=self.mu, scale=mean_std)
+        else:
+            mean = stats.truncnorm.rvs(lo_, hi_, loc=self.mu, scale=mean_std, size=n)
+
+        return mean, precision
+
+    def explanation(self):
+        return "mean was estimated from kappa=%.3f observations with sample mean mu=%.3f,"\
+               " and precision was estimated from 2*alpha=%.3f observations with sample"\
+               " mean mu=%.3f and sum of squared deviations 2*beta=%.3f; finally the"\
+               " result is bounded to %s" % (
+                       self.kappa, self.mu, 2 * self.alpha, self.mu, 2 * self.beta,
+                       str(self.bounds))

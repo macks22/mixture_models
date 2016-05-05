@@ -83,7 +83,7 @@ def gen_prmix_data(nusers, nsamples, F, K):
     coeff_variances = np.ones(F)
 
     # Parameters.
-    pi = np.random.dirichlet(alpha)
+    pi = np.sort(np.random.dirichlet(alpha))
     Z = np.random.multinomial(n=1, pvals=pi, size=nusers)
     Z_as_cat = np.nonzero(Z)[1]  # the nonzero column is the assigned cluster
     logging.info('assigned clusters: %s' % str(Z_as_cat))
