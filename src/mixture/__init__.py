@@ -1,7 +1,7 @@
 from mixture import MixtureModel, MixtureComponentCache, MixtureComponent
-from distributions import multivariate_t, GIW, GIG, AlphaGammaPrior
+from distributions import multivariate_t, GIW, GIG, AlphaGammaPrior, NormalGamma
 from component import (GaussianComponentCache, GaussianComponent,
-                       MGLRComponentCache, MGLRComponent)
+                       MGLRComponentCache, MGLRComponent, NormalBiasVector)
 
 __all__ = [
     # mixture
@@ -13,11 +13,13 @@ __all__ = [
     'multivariate_t',
     'GIW',
     'GIG',
-    'AlphaGammaPrior'
+    'AlphaGammaPrior',
+    'NormalGamma',
 
     # component
     'GaussianComponentCache',
     'GaussianComponent',
     'MGLRComponentCache',
-    'MGLRComponent'
+    'MGLRComponent',
+    'NormalBiasVector'
 ]
