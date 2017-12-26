@@ -5,11 +5,9 @@ Gibbs sampling for Infinite Gaussian Mixture Model.
 import logging
 
 import numpy as np
-import scipy as sp
-import scipy.stats as stats
-import scipy.special as spsp
 import scipy.cluster.vq as spvq
-import matplotlib.pyplot as plt
+import scipy.special as spsp
+import scipy.stats as stats
 
 import gibbs_gmm
 from mixture import GaussianComponent, AlphaGammaPrior

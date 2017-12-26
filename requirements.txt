@@ -1,0 +1,4 @@
+numpy
+scipy
+pymc3
+scikit-learn

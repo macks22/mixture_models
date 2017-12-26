@@ -2,15 +2,14 @@
 Mixture component distributions.
 
 """
+import ccomp
 import numpy as np
 import scipy as sp
-import scipy.stats as stats
 import scipy.special as spsp
-import matplotlib.pyplot as plt
+import scipy.stats as stats
 
 from distributions import multivariate_t, GIG, GIW, NormalGamma
 from mixture import MixtureComponent, MixtureComponentCache
-import ccomp
 
 
 class GaussianComponentCache(MixtureComponentCache):

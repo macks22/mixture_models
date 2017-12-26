@@ -3,17 +3,16 @@ Gibbs sampler for the PMLR (Profiling Mixture of Linear Regressions) model
 without bias terms.
 
 """
-import logging
 import argparse
+import logging
 
 import numpy as np
 import scipy as sp
-import scipy.stats as stats
-import scipy.special as spsp
 import scipy.cluster.vq as spvq
+import scipy.special as spsp
 
-from mixture import cli, gendata
 from mixture import MixtureModel, MGLRComponent, AlphaGammaPrior
+from mixture import cli, gendata
 
 
 class PMLRTrace(object):

@@ -13,13 +13,5 @@ extensions = [
 ]
 
 setup(
-    name="ipmlr",
+    name="mixture_models",
     ext_modules=cythonize(extensions))
-
-# setup(
-#     name="ipmlr",
-#     ext_modules=cythonize(
-#         "mixture/*.pyx",
-#         include_dirs=[np.get_include()]
-#     )
-# )

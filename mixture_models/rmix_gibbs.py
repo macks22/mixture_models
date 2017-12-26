@@ -3,17 +3,12 @@ MCMC sampler implemented using collapsed Gibbs sampling for the Guassian
 Mixtures of Regressions Model.
 
 """
-import sys
-import time
 import logging
-import argparse
 
 import numpy as np
-import scipy as sp
-from scipy import stats
 
-from rmix_pymc import make_parser
 from mixture import gendata
+from rmix_pymc import make_parser
 
 
 def make_gibbs_parser():

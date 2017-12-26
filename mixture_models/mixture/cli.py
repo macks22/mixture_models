@@ -32,6 +32,7 @@ def add_gibbs_args(parser):
         help='step-size for thinning; default is 2, which means every other '
              'sample will be kept')
 
+
 def add_mixture_args(parser):
     parser.add_argument(
         '-v', '--verbose',
@@ -51,9 +52,9 @@ def make_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
 
-    add_mixture_args(parser)   # add mixture modeling arguments
+    add_mixture_args(parser)  # add mixture modeling arguments
     add_data_gen_args(parser)  # add synthetic data generation arguments
-    add_gibbs_args(parser)     # add gibbs sampler arguments
+    add_gibbs_args(parser)  # add gibbs sampler arguments
     return parser
 
 

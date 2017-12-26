@@ -9,11 +9,10 @@ to different extents by each of the componenets. So the shared components are
 combined in different ways to describe each entity.
 
 """
-import logging
 import argparse
+import logging
 
 import numpy as np
-import scipy as sp
 import scipy.cluster.vq as vq
 from scipy import stats
 

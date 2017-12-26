@@ -5,13 +5,12 @@ Implement mixture of regressions model from the paper:
     Scott Gaffney and Padhraic Smyth
 
 """
-import sys
-import logging
 import argparse
+import logging
 
 import numpy as np
 from scipy import stats
-from sklearn import preprocessing, cluster
+from sklearn import cluster
 
 from mixture import gendata
 

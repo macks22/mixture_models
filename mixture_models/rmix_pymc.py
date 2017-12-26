@@ -3,14 +3,11 @@ MCMC sampler implemented using PyMC3 for the Guassian Mixtures of Regressions
 Model.
 
 """
-import sys
-import time
-import logging
 import argparse
+import logging
 
-import pymc3 as pm
 import numpy as np
-import theano
+import pymc3 as pm
 import theano.tensor as T
 from scipy import stats
 

@@ -14,13 +14,12 @@ where $K$ is a symmetric density function. If we set $K$ to be a multivariate
 Gaussian (which is a symmetric density), we have a finite (n-component) Gaussian
 mixture model.
 """
-import heapq
-import logging
 import argparse
+import logging
 
 import numpy as np
-from scipy import stats
 import scipy.spatial.distance as spsd
+from scipy import stats
 
 
 def gen_gmm_data(n, m, k):

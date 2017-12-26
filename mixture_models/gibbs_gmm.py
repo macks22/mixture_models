@@ -3,17 +3,14 @@ Gibbs sampling for Finite Gaussian Mixture Model.
 
 """
 import logging
-import argparse
 
 import numpy as np
-import scipy as sp
-import scipy.stats as stats
-import scipy.special as spsp
 import scipy.cluster.vq as spvq
-import matplotlib.pyplot as plt
+import scipy.special as spsp
+import scipy.stats as stats
 
-from mixture.cli import parse_args
 from mixture import MixtureModel, GaussianComponent
+from mixture.cli import parse_args
 
 
 class GMMTrace(object):

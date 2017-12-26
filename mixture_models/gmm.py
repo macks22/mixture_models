@@ -2,13 +2,10 @@
 EM Algorithm for Gaussian Mixture Model (GMM).
 
 """
-import sys
-import logging
 import argparse
+import logging
 
 import numpy as np
-import scipy as sp
-import pandas as pd
 import scipy.cluster.vq as vq
 from scipy import stats
 
